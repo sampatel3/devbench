@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="356" height="96" viewBox="0 0 356 96" role="img" aria-label="DevBench">
+  <rect width="96" height="96" rx="20" fill="#e08745"/>
+  <g fill="#161411">
+    <rect x="22" y="36" width="6" height="6" rx="1.5"/>
+    <rect x="33" y="36" width="6" height="6" rx="1.5"/>
+    <rect x="44" y="36" width="6" height="6" rx="1.5"/>
+    <rect x="55" y="36" width="6" height="6" rx="1.5"/>
+    <rect x="66" y="36" width="6" height="6" rx="1.5"/>
+    <rect x="18" y="46" width="60" height="10" rx="3"/>
+    <rect x="24" y="56" width="8" height="16" rx="2"/>
+    <rect x="64" y="56" width="8" height="16" rx="2"/>
+  </g>
+  <text x="118" y="62" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="42" font-weight="700" letter-spacing="-0.5" fill="#ece7df">Dev<tspan fill="#e08745">Bench</tspan></text>
+</svg>

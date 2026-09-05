@@ -1,0 +1,2023 @@
+:root {
+  --bg: #ffffff;
+  --panel: #fafafa;
+  /* SELECTION. --panel on --bg is 1.04:1, i.e. invisible, so for a long time the
+     ink edge was the only thing saying "you are on this row" and there was no
+     telling which ticket was open. This is a real step away from both, and it is
+     used for nothing else. */
+  --sel: #e3ebf7;
+  --sel-line: #b9cbe8;
+  --line: #e4e4e4;
+  --ink: #1a1a1a;
+  --muted: #6b6b6b;
+  /* Was #9a9a9a, which is 2.81:1 on white — below the 4.5:1 floor, on the "no
+     worker" and "closed" chips. #767676 is 4.54:1 and still clearly lighter than
+     --muted; the two stay 17.6 ΔE apart, and that gap is pure luminance so it
+     survives every form of colour blindness intact. */
+  --faint: #767676;
+  /* The only warm colour on the page: something needs you. Was #c2610a, which
+     measured 4.19:1 on white, 4.02 on --panel and 3.82 on its own tint — under
+     the floor on all three grounds it touches, and this colour now carries the
+     rail edge as well as the chip. Same hue, ~10% darker: 5.01 / 4.80 / 4.57. */
+  --gate: #af5709;
+  --gate-bg: #fdf3e7;
+  --ok: #1a7f37; /* a settings tick, and a PR that landed */
+  --bad: #b3261e; /* a failure, or a button that kills something */
+  --bad-bg: #fdf1f0;
+  --ice: #55677a; /* icebox, a paused worker, and a worktree with nothing running in it */
+  --ice-bg: #f2f5f8;
+  /* AWAITING MERGE — the work is done and whoever merges has it. Violet because
+     it is the one hue that collides with nothing else here: not the orange gate,
+     not either green on the PR path, not the red, not the slate icebox. Measured
+     5.70:1 on --bg, 5.46 on --panel and 5.16 on its own tint, which is the same
+     band as --gate (5.01) and --ok (5.08) rather than a louder one. */
+  --handover: #7d4fb8;
+  --handover-bg: #f6f2fb;
+  /* A worker is running RIGHT NOW. Deliberately not orange: orange means the
+     ball is in your court, and this is the opposite of that. */
+  --live: #2f8f4e;
+  --live-ink: #1c6b39;
+  --live-bg: #f1f9f3;
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+/* ---------------------------------------------------------------- buttons */
+
+/* One system, three weights, used everywhere:
+     plain      secondary — ghosted, but never borderless.
+     .primary   the thing the card is asking you to do. Filled.
+     .danger    it kills something. Outline and a tint, deliberately NOT filled:
+                the destructive control should not be the easiest one to hit.
+   `.linkish`, `.gbtn` and `.rail-item` opt out below — they are a link, a
+   disclosure toggle and a list row, not quiet buttons. */
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { color: var(--faint); cursor: default; }
+button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+
+button.primary {
+  background: var(--gate);
+  border-color: var(--gate);
+  color: #fff;
+  font-weight: 500;
+}
+button.primary:hover:not(:disabled) { border-color: var(--gate); filter: brightness(1.08); }
+button.primary:disabled { background: var(--panel); border-color: var(--line); color: var(--faint); font-weight: 400; }
+
+button.danger { border-color: var(--bad); color: var(--bad); background: var(--bad-bg); }
+button.danger:hover:not(:disabled) { border-color: var(--bad); }
+button.danger:disabled { border-color: var(--line); background: var(--bg); color: var(--faint); }
+
+/* A phone has no hover, so the border has to carry the affordance at rest, and
+   every control has to be big enough to hit — see the `touch` block at the very
+   bottom of this file, which has to come last to win. */
+
+textarea {
+  font: inherit;
+  width: 100%;
+  min-height: 84px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  resize: vertical;
+}
+
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+pre {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+code { background: var(--panel); padding: 1px 4px; border-radius: 3px; }
+pre code { background: none; padding: 0; }
+
+/* ---------------------------------------------------------------- layout */
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+header h1 { font-size: 14px; font-weight: 600; margin: 0; }
+header .product-sub {
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+/* The switcher sits at the LEFT of its own row, not floated to wherever the
+   header's metas happened to end. `flex: 1` made the spacer eat the remaining
+   width and shove the tabs right; as a full-width, zero-height item it just
+   breaks the line, and `.views { margin-right: auto }` then keeps the tabs left
+   while the tools group stays right. */
+header .spacer { flex-basis: 100%; height: 0; margin: 0; }
+header .views { margin-right: auto; }
+header .meta { color: var(--muted); font-size: 12.5px; }
+
+.views { display: flex; gap: 2px; align-items: center; flex-wrap: wrap; }
+
+/* TABS look like tabs. They used to be plain buttons sitting in the same row as
+   Refresh and Sync, which is why a refresh read as a seventh section: nothing
+   said "these six change the page, those two do a thing". */
+.views button {
+  border-color: transparent;
+  background: none;
+  border-radius: 6px 6px 0 0;
+  border-bottom: 2px solid transparent;
+  padding-bottom: 5px;
+}
+.views button:hover { background: var(--panel); }
+.views button.on {
+  border-color: transparent;
+  border-bottom-color: var(--ink);
+  background: var(--panel);
+  font-weight: 600;
+}
+
+/* TOOLS are not tabs: connection state, plus the two actions that change it.
+   Divided from the switcher, and never underlined. */
+.tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-left: 12px;
+  margin-left: 4px;
+  border-left: 1px solid var(--line);
+}
+.tools button.tool {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.tools button.tool:hover { background: var(--panel); }
+.tools .read-at { white-space: nowrap; }
+
+/* Read GitHub now, and when it was last read — one control, because they are
+   one thought. The console asks GitHub every fifteen minutes (two exhausted the
+   hourly quota), and at that cadence a page with no age on it looks live when
+   it is not. Quiet: it is a fact about the data, not a warning. */
+.refresh { display: inline-flex; align-items: center; gap: 8px; }
+.refresh .read-at { margin: 0; white-space: nowrap; }
+
+.banner {
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.banner.warn { background: var(--gate-bg); color: var(--gate); }
+
+.split { display: grid; grid-template-columns: 320px 1fr; min-height: calc(100vh - 52px); }
+/* Both panes may hold something wider than they are (the spine, a table, a
+   path). `min-width: 0` is what lets those scroll inside their own box instead
+   of stretching the grid column and taking the whole page sideways with it. */
+.rail { border-right: 1px solid var(--line); overflow-y: auto; min-width: 0; }
+.detail-pane { min-width: 0; }
+.detail { padding: 20px 24px 60px; max-width: 900px; }
+.detail-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.detail-status .note { margin: 0; }
+
+/* ----------------------------------------------------------- work sources */
+
+.work-inbox {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.work-inbox-head,
+.settings-title,
+.connection-card-head,
+.source-item,
+.connection-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.work-inbox-head { justify-content: space-between; gap: 18px; flex-wrap: wrap; }
+.work-inbox-head > div:first-child { display: grid; gap: 1px; }
+.eyebrow {
+  color: var(--faint);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.source-actions { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+.source-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--faint);
+  background: var(--bg);
+  font-size: 11.5px;
+}
+.source-chip.connected { border-color: #a7d7b4; color: var(--live-ink); background: var(--live-bg); }
+.source-empty { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.source-empty span { color: var(--muted); font-size: 12.5px; }
+.source-items { margin-top: 9px; }
+.source-items > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.source-list { display: grid; gap: 0; margin-top: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.source-item { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.source-item:last-of-type { border-bottom: none; }
+.source-item-copy { flex: 1; min-width: 0; }
+.source-item-copy > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-item-copy .note { margin: 1px 0 0; }
+.source-more { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; }
+.source-more .note { margin: 0; }
+.provider-mark,
+.provider-logo {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.provider-mark { width: 25px; height: 25px; color: #fff; background: #24292f; }
+.provider-mark.linear { background: #5e6ad2; }
+.source-boundary { margin: 9px 0 0; }
+
+/* A narrow window stacks instead of pushing the detail pane off the edge. */
+@media (max-width: 900px) {
+  .split { grid-template-columns: 1fr; }
+  .rail { border-right: none; border-bottom: 1px solid var(--line); max-height: 40vh; }
+  .detail { padding: 16px; }
+  .spine { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 10px 6px; }
+  .stage { min-width: 0; }
+}
+
+/* ----------------------------------------------------------------- phone */
+
+/* Below this width the rail is not a rail: it is the whole page, and tapping an
+   issue opens the detail OVER it with a Back control. App.tsx swaps the two —
+   see NARROW there, which must stay in step with this number.
+   The rule everything else here serves: the PAGE never scrolls sideways.
+   Anything wider than the screen scrolls inside its own box. */
+@media (max-width: 719px) {
+  header {
+    padding: calc(10px + env(safe-area-inset-top)) 14px 10px;
+    gap: 4px 14px;
+    align-items: center;
+  }
+  header h1 { flex: 0 0 auto; }
+  .views { width: 100%; gap: 8px; margin-top: 2px; }
+  .view-pick { flex: 1; display: flex; }
+  .view-pick select {
+    width: 100%;
+    font: inherit;
+    padding: 6px 8px;
+    border: 1px solid var(--muted);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  .banner { padding: 8px 14px; flex-wrap: wrap; }
+
+  .split { grid-template-columns: 1fr; min-height: 0; }
+  /* The list is the page: no height cap, no border cutting it in half. */
+  .rail { max-height: none; border-bottom: none; }
+  .detail { padding: 14px 14px calc(70px + env(safe-area-inset-bottom)); }
+  .detail-pane { padding-top: 10px; }
+  .back { margin-left: 14px; }
+
+  /* Ten stages do not fit 375px. The spine keeps its shape and scrolls in its
+     own box rather than collapsing into a wall of tiny columns. */
+  .spine {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    padding-bottom: 8px;
+  }
+  .stage { flex: 0 0 112px; min-width: 112px; }
+
+  /* Long words that cannot break — a branch name, a worktree path — wrap here
+     rather than push the page out. */
+  .detail, .grid-wrap, .rail { overflow-wrap: break-word; }
+  .facts { grid-template-columns: 96px 1fr; }
+  .gate-card, .live-card, .confirm { padding-left: 12px; padding-right: 12px; }
+  .gate-actions { flex-wrap: wrap; }
+  .gate-actions button { flex: 1 1 auto; }
+  .grid-wrap { padding: 14px 14px 60px; }
+  /* Only the padding. The strip is two columns at every width now, so there is
+     no phone column override to lose the specificity fight with the base
+     `.strip` rule further down this file. */
+  /* Full width at the bottom of the screen: a 360px card floated right on a
+     375px phone is a card with 15px of margin on one side and none on the
+     other. */
+  .toasts { left: 12px; right: 12px; max-width: none; }
+  .strip .stat { padding: 8px 12px; }
+  .card { padding-left: 12px; padding-right: 12px; }
+  /* The stamp is long ("live, sampled 4s ago · containers and ports read
+     14:02"), so it wraps to its own line and the buttons stay below it. */
+  .card-actions { margin-top: 10px; }
+  /* Fifteen columns scroll in their own box, and the swipe stops there rather
+     than chaining to the page — same rule the spine follows. */
+  .grid-scroll { overscroll-behavior-x: contain; }
+  .settings, .info { max-width: none; }
+  .steps > li { padding-left: 30px; }
+  textarea { min-height: 120px; }
+  .evi-text pre, pre { max-width: 100%; }
+}
+
+/* ------------------------------------------------------------------ rail */
+
+.rail-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 11px 16px;
+  background: none;
+}
+.rail-item:hover { background: var(--panel); }
+.rail-item.on {
+  /* Three channels now, all saying the same thing, because one faint one was
+     not enough: a background that is actually a different colour, a 4px ink
+     edge, and a hairline under it. HUE still belongs to status — the gate and
+     uat rules below keep their own colour and simply run wider when selected. */
+  background: var(--sel);
+  box-shadow: inset 4px 0 0 var(--ink);
+  border-bottom-color: var(--sel-line);
+}
+.rail-item.on .rail-num { font-weight: 700; }
+
+/* THE EDGE, and the bug it fixes.
+   This rule used to be `.rail-item.on.gate` — it required the row to be
+   SELECTED, so the mark that says "this one is asking you something" only ever
+   appeared on the row you had already opened. Backwards, and the reason a rail
+   full of work read as undifferentiated.
+
+   Unselected now shows it too. `edgeClass` decides who gets one, and it reads the
+   same inputs the list ORDER reads, so position and colour cannot disagree. */
+.rail-item.gate { box-shadow: inset 2px 0 0 var(--gate); }
+
+/* WIDTH says selected, HUE says whose it is — two channels, no third colour.
+   That separation is needed because --panel on --bg is 1.04:1, i.e. the selected
+   row's background is invisible; before this, the ink edge was doing all the work
+   of marking selection, and making the status edge unconditional would have taken
+   it away. A selected row keeps its status colour and simply gets a thicker bar. */
+.rail-item.on.gate { box-shadow: inset 4px 0 0 var(--gate); }
+/* Sent back from UAT — the red edge beats the orange one, selected or not,
+   because it is the row that outranks every band above it in the list. */
+.rail-item.uat { box-shadow: inset 3px 0 0 var(--bad); }
+.rail-item.on.uat { box-shadow: inset 5px 0 0 var(--bad); }
+/* Parked, or blocked on a named person. The same 2px edge the gate uses, in the
+   cold slate instead of the orange: the row is marked, and the mark says "held"
+   rather than "answer me". Faded, but nowhere near as far as `.finished` — a
+   parked ticket is work you WILL come back to, and it keeps its full two-line
+   title so you can find it by reading rather than by remembering a number.
+
+   Deliberately NOT collapsed, folded or hidden. It sinks (see `sunk()` in
+   priority.ts) and it stays in the same scroll: a state you cannot see is a
+   state that rots. */
+.rail-item.aside { box-shadow: inset 2px 0 0 var(--ice); opacity: 0.72; }
+.rail-item.on.aside { box-shadow: inset 4px 0 0 var(--ice); opacity: 1; }
+.rail-item.aside:hover { opacity: 1; }
+.rail-num { color: var(--muted); font-size: 12.5px; }
+.rail-title { display: block; margin: 1px 0 6px; }
+.rail-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* Back to the list. Only ever rendered on a phone, where the detail replaces
+   the list rather than sitting beside it. */
+.back { margin: 0 0 2px; }
+
+/* ------------------------------------------------------------------ chip */
+
+.chip {
+  display: inline-block;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.chip.gate { border-color: var(--gate); color: var(--gate); background: var(--gate-bg); }
+/* Running: the same green as the live card, so a working issue is spottable in
+   the list without opening it. The dot pulses; the chip does not move. */
+.chip.active { border-color: var(--live); color: var(--live-ink); background: var(--live-bg); }
+.chip.active::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--live);
+  margin-right: 5px;
+  vertical-align: 1px;
+  animation: live-pulse 2s ease-in-out infinite;
+}
+/* Paused: a HELD state, and it needs its own look for a reason. It must not be
+   green (the worker is not working) and must not be orange (nothing is being
+   asked of you) — a paused worker that read as either would be the exact
+   "looks stuck" failure this whole lever exists to avoid. Cold slate, with a
+   solid square where the running chip has a pulsing dot. */
+.chip.paused { border-color: var(--ice); color: var(--ice); background: var(--ice-bg); }
+.chip.paused::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: var(--ice);
+  margin-right: 5px;
+  vertical-align: 1px;
+}
+/* HELD: a worktree exists and nothing is running in it — a checkpoint, or a
+   worker that is gone. These two were among the seven statuses that fell through
+   to the plain grey chip, which made stopped work look exactly like an open PR
+   nobody is waiting on.
+
+   Same cold slate as paused, and deliberately NOT the same class: the paused
+   chip's solid square means "frozen with SIGSTOP, nothing lost, one click
+   resumes it". A checkpoint holds no frozen process and a detached worker's
+   process is gone, so they get the colour without the square. Same family,
+   because both mean cold; no square, because nothing here is suspended. */
+.chip.held { border-color: var(--ice); color: var(--ice); background: var(--ice-bg); }
+/* ASIDE: not complete, and awaiting. The operator asked for blocked rows to wear
+   the same UI as parked ones, so it is visible which tickets are not complete and
+   awaiting.
+
+   TWO members, ONE treatment: a ticket you parked, and a ticket blocked on a
+   named person's reply. The same cold slate as `held` and `paused`, because
+   this whole family means the same thing — nothing is moving here — and the
+   palette already says so. No new hue was invented for it.
+
+   What separates it from `held` and `paused` is not the chip: it is the ROW.
+   `.rail-item.aside` below fades the row and paints its left edge, which
+   neither a checkpoint nor a paused worker gets, because those two are still
+   near the top of the list and these have left it. Colour says which family;
+   position and fade say which member of it.
+
+   The dashes are the one mark of its own, and they are the same idea as the
+   dashed `needs-triage` pill: an INTERRUPTION. A solid outline is a state the
+   work is in; a broken one is a state the work has been taken out of. */
+.chip.aside {
+  border-color: var(--ice);
+  border-style: dashed;
+  color: var(--ice);
+  background: var(--ice-bg);
+}
+/* WHICH of the two. Sharing a treatment is not the same as being
+   indistinguishable, so the parked row carries a second chip that names the
+   state its status chip cannot — the status chip is still busy saying
+   "AT GATE C", which is the point of the whole feature. `blocked` needs no such
+   chip: its status chip already says the word. */
+.chip.parked { font-weight: 600; letter-spacing: 0.04em; }
+
+/* The parked card, at the top of the detail pane. It borrows the `.drafted-item`
+   idiom exactly — one cold left edge on a tinted panel — because the thing it
+   has to say is the same KIND of thing: nothing has gone wrong, this is simply
+   where the work is. It must not look like a warning; parking is a decision
+   that worked. */
+.parked-card {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ice);
+  border-radius: 3px;
+  background: var(--ice-bg);
+}
+.parked-line { margin: 0; font-size: 13.5px; color: var(--ink); }
+.parked-line strong { color: var(--ice); letter-spacing: 0.02em; }
+/* Your own words, quoted back — the same treatment `.pending-detail` gives the
+   question you asked. This is the line that is worth having in three weeks. */
+.parked-why { margin: 4px 0 8px; color: var(--muted); font-size: 12.5px; }
+/* Said plainly rather than left blank. A parked ticket with no reason is a
+   legitimate thing and the card must not nag about it. */
+.parked-why.none { font-style: italic; }
+
+/* The reason box, in the toolbar. Full width on its own row so the input has
+   somewhere to go, and the note sits under it rather than beside the button. */
+.park-form { flex: 1 0 100%; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.park-form input {
+  flex: 1 1 260px;
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.park-form .note { flex: 1 0 100%; margin: 0; }
+/* Merged: landed, and calm. Green, but the settings-tick green rather than the
+   live green — this is not a worker running, it is work that has landed.
+
+   The two greens are 6.4 ΔE apart and no better under any form of colour
+   blindness, so hue is NOT the channel separating them and must never be relied
+   on to. `active` is tinted and pulses; this is a bare outline that does neither.
+   Fill and motion carry the distinction, and both survive colour blindness. */
+/* Tinted, and deliberately without a pulse: nothing is running: a person is
+   holding it. The pulse is reserved for a machine that is moving right now. */
+.chip.handover { border-color: var(--handover); color: var(--handover); background: var(--handover-bg); }
+.chip.merged { border-color: var(--ok); color: var(--ok); }
+.chip.failed { border-color: var(--bad); color: var(--bad); }
+.chip.none { color: var(--faint); }
+/* Provenance: where the issue came from. A fact, not a warning — faint, and it
+   never borrows the orange that means "this needs you". It sits next to the
+   priority pill, so "needs triage · self-filed" reads as one thought. */
+.chip.self { color: var(--faint); border-color: var(--line); }
+
+/* Sent back from UAT. The ONLY chip on the page that fills solid: everything
+   else — every chip, every pill, the P0 pill included — is an outline on a
+   tint, so the eye lands here first without anything else having to get louder.
+   Red because shipped work failed a person's test. It carries a name and a date
+   inside it, so the row answers what, who and when without being opened. */
+.chip.uat {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------------ pills */
+
+/* What triage ranked this issue, or "needs triage" when it has not. Informative,
+   not loud: the only pill that raises its voice is P0, and the unranked one is
+   dashed because it is an ABSENCE — nobody has ranked it, which is not the same
+   as "normal". There is no second triage chip; this pill is the whole signal. */
+.prio {
+  display: inline-block;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.prio.p0 { border-color: var(--bad); color: var(--bad); background: var(--bad-bg); font-weight: 600; }
+.prio.p1 { border-color: var(--gate); color: var(--gate); }
+.prio.p2 { border-color: var(--line); color: var(--muted); background: var(--panel); }
+.prio.p3 { border-color: var(--line); color: var(--faint); }
+.prio.icebox { border-color: #cfd8e0; color: var(--ice); background: #f4f7f9; }
+.prio.untriaged { border-style: dashed; border-color: var(--muted); color: var(--muted); }
+
+/* --------------------------------------------------------------- account */
+
+/* The account a worker runs under. Quiet by design: it only appears at all when
+   more than one account is registered. */
+.acct {
+  display: inline-block;
+  font-size: 11.5px;
+  padding: 1px 7px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.acct-pick { color: var(--muted); font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; }
+.acct-pick select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: none; color: var(--ink); }
+.acct-pick select:disabled { color: var(--muted); background: var(--panel); }
+
+/* "Run as" is always on screen next to a start button, even with one account —
+   a control you cannot see is a control you cannot find. */
+.runas { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.runas .note { margin: 0; }
+
+/* -------------------------------------------------------------- settings */
+
+.acct-card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px 16px 4px;
+  margin: 12px 0;
+  background: var(--bg);
+}
+.acct-card-head { margin: 0 0 8px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.health-list { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.health { margin: 2px 0; color: var(--muted); }
+.health .mark { display: inline-block; width: 14px; font-weight: 600; }
+.health.yes { color: var(--ink); }
+.health.yes .mark { color: var(--ok); }
+.health.no .mark { color: #b3261e; }
+.health.unknown .mark { color: var(--faint); }
+
+/* The one thing left to do on this account, said outright rather than inferred
+   from the ticks above it. Orange means what it always means: it needs you. */
+.next-step { font-size: 12.5px; color: var(--gate); margin: 10px 0 4px; }
+.next-step.done { color: var(--ok); }
+
+/* Adding an account is 1-2-3-4 on the page, not prose to decode. */
+.settings { max-width: 760px; }
+.settings p { max-width: 68ch; }
+.connections-settings {
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--line);
+}
+.settings-title { justify-content: space-between; align-items: flex-end; flex-wrap: wrap; }
+.settings-title h2 { margin: 1px 0 0; font-size: 19px; letter-spacing: -0.02em; }
+.connection-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.connection-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.connection-card.connected { border-color: #a7d7b4; background: var(--live-bg); }
+.connection-card-head { align-items: flex-start; }
+.connection-card-head > div { flex: 1; min-width: 0; }
+.connection-card h3 { margin: 0; font-size: 14px; }
+.provider-logo { width: 34px; height: 34px; color: #fff; background: #24292f; }
+.provider-logo.linear { background: #5e6ad2; }
+/* Sentry's own purple. It is a brand mark, not a status colour, so it is
+   deliberately unrelated to the --handover violet the PR-open chip uses. */
+.provider-logo.sentry { background: #6559c5; }
+.connection-state {
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--faint);
+  background: var(--bg);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.connection-state.ok { border-color: #a7d7b4; color: var(--live-ink); }
+.connection-card > p { font-size: 12.5px; }
+.linear-key { display: grid; gap: 5px; margin: 12px 0 9px; color: var(--muted); font-size: 12px; }
+.linear-key input {
+  min-width: 0;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+.connection-actions { flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .work-inbox { padding: 10px 14px; }
+  .source-actions { width: 100%; }
+  .source-chip { flex: 1 1 auto; justify-content: center; }
+  .source-item { align-items: flex-start; flex-wrap: wrap; }
+  .source-item-copy { flex-basis: calc(100% - 38px); }
+  .source-item-copy > div {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .source-item > button,
+  .source-item > a { margin-left: 35px; }
+  .connection-grid { grid-template-columns: 1fr; }
+}
+.steps { counter-reset: step; list-style: none; margin: 12px 0 0; padding: 0; }
+.steps > li { position: relative; padding: 0 0 18px 36px; }
+.steps > li::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  text-align: center;
+  line-height: 21px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.steps .step-title { margin: 1px 0 4px; }
+.steps .note { margin: 0 0 8px; }
+
+.add-acct { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 10px 0 4px; }
+.add-acct label { color: var(--muted); font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; }
+.add-acct input { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--bg); }
+
+/* ----------------------------------------------------------------- spine */
+
+.spine { display: flex; gap: 0; margin: 18px 0 6px; flex-wrap: wrap; }
+.stage { flex: 1 1 0; min-width: 76px; padding-right: 10px; }
+.stage .bar { height: 3px; background: var(--line); border-radius: 2px; }
+.stage.done .bar { background: var(--muted); }
+.stage.here .bar { background: var(--ink); }
+.stage .n { font-size: 11.5px; color: var(--faint); margin-top: 5px; }
+.stage .lbl { font-size: 12px; color: var(--muted); }
+.stage.here .lbl { color: var(--ink); }
+.stage .g { font-size: 11.5px; color: var(--faint); }
+.stage .g.passed { color: var(--muted); }
+.stage .g.at { color: var(--gate); font-weight: 600; }
+
+/* -------------------------------------------------------------- live card */
+
+/* A worker running RIGHT NOW, and the one control that stops it. It is the
+   first thing in the pane on purpose: while an agent is working, "what is it
+   doing" outranks every other question on the page. Green, not orange — orange
+   on this page always means the machine has stopped and is waiting for you. */
+.live-card {
+  border: 1px solid var(--live);
+  background: var(--live-bg);
+  border-radius: 6px;
+  padding: 12px 16px 14px;
+  margin: 14px 0 2px;
+}
+.live-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.live-head h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--live-ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.live-head .spacer { flex: 1; }
+/* Fixed size, and only the opacity moves — a pulse that resized anything would
+   shove the card's text sideways twice a second. */
+.live-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--live);
+  animation: live-pulse 2s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-dot, .chip.active::before { animation: none; }
+}
+.live-card p { margin: 8px 0 0; font-size: 13px; }
+.live-card .note { margin: 6px 0 0; }
+.live-card .last-text { color: var(--muted); font-size: 12.5px; }
+
+/* The same card, frozen. Everything about it says HELD rather than running:
+   the green goes, the pulsing dot goes, and the heading says Paused. It stays
+   the first thing in the pane because a paused worker is still the answer to
+   "what is happening on this issue". */
+.live-card.paused { border-color: var(--ice); background: var(--ice-bg); }
+.live-card.paused .live-head h2 { color: var(--ice); }
+
+/* ------------------------------------------------- the machine, measured */
+
+/* The numbers that exist because the dashboard lied. Every one of them is at
+   most one tick old; the claims they cannot support are said out loud in the
+   card's "How this is measured" disclosure rather than left to be assumed.
+   They live inside the one machine card now — see `.card` below — so the old
+   `.truth` wrapper and its `.note` rule have gone with the second heading. */
+.truth-system { margin: 0 0 6px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.truth-forecast {
+  margin: 0 0 8px;
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--live);
+  border-radius: 4px;
+  background: var(--panel);
+}
+/* The forecast that does NOT fit. It is the one line on the page that was
+   missing on the night of the crash, so when it says no it looks like it. */
+.truth-forecast.bad { border-left-color: var(--bad); color: var(--bad); background: var(--bad-bg); }
+.truth-workers { list-style: none; margin: 0 0 8px; padding: 0; }
+.truth-workers li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.truth-workers li:last-child { border-bottom: none; }
+.truth-workers code { font-size: 12.5px; }
+.truth-workers .mem { color: var(--ink); font-variant-numeric: tabular-nums; min-width: 72px; }
+.truth-workers .tag { color: var(--muted); font-size: 11.5px; }
+.truth-workers .tag.paused { color: var(--ice); }
+.truth-workers .note { font-size: 12px; margin: 0; }
+/* The header's forecast clause when it does not fit. */
+.meta.bad { color: var(--bad); }
+
+/* Merged, and Stage 9 still to do. Calm on purpose: it is not a demand. */
+.merged-card { border-left: 3px solid var(--ok); }
+.merged-card textarea { width: 100%; margin-top: 8px; }
+
+.gate-card {
+  border: 1px solid var(--gate);
+  background: var(--gate-bg);
+  border-radius: 6px;
+  padding: 16px 18px;
+  margin: 18px 0;
+}
+.gate-card h2 { font-size: 14px; margin: 0 0 8px; color: var(--gate); }
+/* The same card once the gate has been ANSWERED and is queued behind a busy
+   desk: no orange, because nothing is waiting on you any more, and no buttons,
+   because there is nothing left to press. */
+.gate-card.answered { border-color: var(--muted); background: var(--panel); }
+.gate-card.answered h2 { color: var(--ink); }
+.gate-card ol { margin: 6px 0 14px; padding-left: 20px; }
+.gate-card li { margin-bottom: 8px; }
+.gate-actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+
+/* ----------------------------------------------------- gate C's three parts
+
+   The operator asked gate C for three things — evidence with screenshots, a
+   click-script to follow, and somewhere to keep asking until the change makes
+   sense. They are numbered sections divided by a rule because each is a different
+   job, done in that order: sections to scan, not prose to decode. */
+.gate-sec { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.gate-sec h3 { font-size: 13px; font-weight: 600; margin: 0 0 6px; }
+.gate-sec .qa-script { margin-top: 6px; }
+
+/* The contact sheet. The thumbnail IS the link and full size opens in a tab —
+   no lightbox to build or to learn, and it behaves the same on a phone. */
+.shot-grid {
+  display: grid;
+  /* 140 rather than 150 is measured, not guessed: at 375px the card's content
+     box is 309px, and 150+10+150 = 310 misses two columns by one pixel. Five
+     across on the desktop pane either way. */
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin: 8px 0 4px;
+}
+.shot-grid figure { margin: 0; }
+.shot-grid img {
+  display: block;
+  width: 100%;
+  height: 110px;
+  /* `contain`, not `cover`, and this was decided by looking at real evidence:
+     a worker's shots are a mix of full pages and tight close-ups, and `cover`
+     scales a 300px-wide button crop up until the thumbnail is three magnified
+     letters — the one shot you most need to recognise becomes the one you
+     cannot. Letterboxing is the honest trade: every thumbnail shows the whole
+     picture, and full size is one click away. */
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+}
+.shot-grid a:hover img, .shot-grid a:focus-visible img { border-color: var(--muted); }
+.shot-grid figcaption { font-size: 11.5px; color: var(--muted); margin-top: 3px; overflow-wrap: break-word; }
+
+/* EVERY WARNING ON A GATE CARD, IN ONE BLOCK, AT THE TOP.
+
+   The operator asked for warnings to be clear in the console. Four things
+   used to warn you in four styles — an orange line, a grey note, a red note, a
+   red block — and none of them said whether it stopped anything. Here severity
+   is the design: the tag on the left says what the warning costs, the left edge
+   carries its colour, and the button that fixes one sits inside it. */
+.gate-warnings {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  margin: 0 0 12px;
+  overflow: hidden;
+}
+.gate-warnings-head {
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.gate-warning {
+  padding: 8px 10px;
+  font-size: 13px;
+  border-left: 3px solid var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.gate-warning:last-child { border-bottom: 0; }
+.gate-warning p { margin: 0; }
+.gate-warning button { margin-top: 6px; background: var(--bg); font-size: 12px; }
+/* The tag, not the colour, is what you read first — the colour only has to
+   agree with it. Blocking is the red already used for a dead gate; a call of your
+   own is the gate colour, the same one the Approve button wears. */
+.gate-warning-tag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.gate-warning.blocking { border-left-color: var(--bad); background: var(--bad-bg); }
+.gate-warning.blocking .gate-warning-tag { background: var(--bad); color: #fff; }
+.gate-warning.accept { border-left-color: var(--gate); background: var(--gate-bg); }
+.gate-warning.accept .gate-warning-tag { background: var(--gate); color: #fff; }
+.gate-warning.note { border-left-color: var(--line); }
+.gate-warning.note .gate-warning-tag { background: var(--panel); color: var(--muted); }
+
+/* The tick that gets you past a warning you have decided to take. Beside Approve,
+   not buried in the block, because it is part of the decision — and it names
+   what you are taking on so a tick is never a shrug. */
+.gate-accept {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--gate);
+  border-radius: 4px;
+  background: var(--gate-bg);
+  font-size: 13px;
+  cursor: pointer;
+}
+.gate-accept input { margin: 2px 0 0; cursor: pointer; }
+
+/* Something the worker was REQUIRED to attach is missing. Red on purpose: a gate
+   that arrived without its evidence must never look like one that did, and the
+   button that fixes it is inside the block that complains about it. */
+.gate-missing {
+  border: 1px solid var(--bad);
+  background: var(--bad-bg);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 8px 0 4px;
+  font-size: 13px;
+}
+.gate-missing p { margin: 0 0 8px; color: var(--bad); }
+.gate-missing button { background: var(--bg); }
+
+/* ------------------------------------------------- the click-script (gate C)
+
+   "Run it yourself": where the app is, what to sign in as, what to click. It
+   reads as a panel rather than prose because it is a THING TO DO, and because
+   the links in it are the whole point — a click-script you cannot reach is one
+   you do not run. */
+.qa-script {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  padding: 10px 14px 12px;
+  margin: 12px 0;
+}
+.qa-line { margin: 4px 0; font-size: 13px; }
+.qa-k { display: inline-block; min-width: 62px; color: var(--muted); font-size: 12.5px; }
+/* The sign-in, with its copy button. Retyping a password off the screen is the
+   friction that turns a two-minute check into one you skip. */
+.copy-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0; font-size: 13px; }
+.copy-line code { padding: 4px 8px; user-select: all; }
+.qa-cred { margin: 4px 0 2px; }
+
+/* ------------------------------------------------ the summary, as bullets
+
+   250 words in one block was the first thing on the card, and the operator said
+   so: too wordy to read, and asked for it bulleted and simpler. Labels are one
+   line each and bullets are one line each. */
+.sum { margin: 0 0 10px; }
+.sum-group { margin: 0 0 6px; }
+.sum-label { margin: 0; font-size: 11.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.sum-one { margin: 1px 0 0; }
+.sum-list { margin: 1px 0 0; padding-left: 18px; }
+.sum-list li { margin: 1px 0; }
+/* Whatever the worker wrote that was not a bullet. Kept, never dropped — but it
+   does not get the whole page either. */
+.sum-prose { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
+.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.clamp.open { display: inline; overflow: visible; }
+
+/* ------------------------------------------------------ the steps, ticked
+
+   Each step is one block with one tick, and the before/after live INSIDE it —
+   the operator asked for the before and the after to be one question rather than
+   a point for each. The left border is the state, because at a glance a column of
+   green edges is the answer to "how much is left". */
+.qa2-progress { float: right; font-weight: 400; color: var(--muted); font-size: 12px; }
+.qa2-progress.done { color: var(--ok); }
+.qa2-steps { list-style: none; margin: 10px 0 4px; padding: 0; }
+.qa2-step {
+  border-left: 3px solid var(--line);
+  padding: 2px 0 8px 10px;
+  margin: 0 0 12px;
+}
+.qa2-step--verified { border-left-color: var(--ok); }
+.qa2-step--failed { border-left-color: var(--bad); }
+/* The number is its own column so a step that wraps to three lines still reads
+   as one numbered thing rather than a number with a paragraph under it. */
+.qa2-do { display: flex; gap: 8px; margin: 0 0 6px; font-size: 13px; }
+.qa2-n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.qa2-doc { flex: 1 1 auto; min-width: 0; }
+.qa2-open { margin-left: 6px; }
+.qa2-samepage { margin-left: 6px; color: var(--faint); font-size: 12px; }
+
+/* Two columns on a desktop, stacked on a phone — and the pairing survives the
+   stack because both halves are inside one step with one tick. */
+.qa2-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 520px) {
+  .qa2-pair { grid-template-columns: 1fr; }
+}
+.qa2-half { min-width: 0; }
+.qa2-label { margin: 0; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.qa2-text { margin: 1px 0 4px; font-size: 12.5px; }
+/* A capture the console could not find: the chip says so and the link answers
+   why in the route's own words. No underline — the chip is the affordance. */
+.qa2-gone { text-decoration: none; }
+.qa2-shot { display: block; }
+.qa2-shot img {
+  display: block;
+  width: 100%;
+  height: 104px;
+  /* `contain`, for the reason the contact sheet gives: a tight crop scaled to
+     `cover` becomes three magnified letters. */
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+}
+.qa2-shot:hover img, .qa2-shot:focus-visible img { border-color: var(--muted); }
+.qa2-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 11.5px;
+  color: var(--muted);
+  background: var(--panel);
+}
+/* Amber, never red: red on this card means a missing artifact or a violation,
+   and an over-long step is neither. */
+.qa2-chip--warn { color: var(--gate); border-color: var(--gate); background: var(--gate-bg); }
+.qa2-flags { margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+
+.qa2-verify { margin: 8px 0 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.qa2-ok, .qa2-no { min-width: 96px; }
+.qa2-set { font-size: 12.5px; }
+.qa2-set.ok { color: var(--ok); }
+.qa2-set.bad { color: var(--bad); }
+.qa2-note { margin: 6px 0 0; }
+.qa2-note textarea { min-height: 52px; }
+.qa2-note-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; flex-wrap: wrap; }
+
+/* The trail on the step itself: failed, what changed, re-verified. Folded away,
+   because the CURRENT state is what you are checking — the past is there to be
+   opened when the fix is the thing in question. */
+.qa2-history { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+.qa2-history > summary { cursor: pointer; color: var(--muted); }
+.qa2-h-line, .qa2-h-fix { margin: 3px 0 0 4px; }
+.qa2-h-fix { color: var(--ink); }
+
+/* One button, one round: you tick the whole card and everything you failed goes
+   back together. Two failed steps must never cost two worker runs. */
+.qa2-rework {
+  border: 1px solid var(--gate);
+  background: var(--gate-bg);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 10px 0 4px;
+}
+.qa2-rework-head { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.qa2-rework .note { margin: 8px 0 0; }
+.qa2-edge { margin: 10px 0 0; font-size: 12.5px; color: var(--muted); }
+.qa2-edge > summary { cursor: pointer; }
+.qa2-edge ul { margin: 4px 0 0; padding-left: 20px; }
+
+/* ------------------------------------------------------ the question thread
+
+   Asking at a gate without deciding it. Indented under the question so a long
+   exchange still reads as a conversation rather than a list of paragraphs. */
+.thread { margin: 12px 0 2px; }
+.thread .qa { margin: 0 0 10px; }
+.thread .q { margin: 0 0 3px; }
+.thread .a { margin: 0 0 0 14px; padding-left: 10px; border-left: 2px solid var(--line); }
+.thread .note { margin: 2px 0 0 14px; }
+
+/* ------------------------------------------------------ the understanding quiz
+
+   Multiple choice rather than free text, so a pick can be graded in the page —
+   the answer key is already here, and "tell me if it's right or wrong" has to be
+   instant or it is not that. Colour says one thing each: green confirmed, amber
+   a miss worth reading, grey not yet, and red is reserved for a missing artifact
+   or a violation. A wrong answer never wears red and never blocks the gate. */
+.quiz { margin: 4px 0 0; }
+.quiz-note { margin: 0 0 8px; }
+.quiz-brief-head { margin: 8px 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.quiz-brief { margin: 0 0 10px; padding-left: 18px; font-size: 13px; }
+.quiz-brief li { margin: 2px 0; }
+.quiz-q { border-left: 3px solid var(--line); padding: 2px 0 2px 10px; margin: 0 0 14px; }
+.quiz-q.right { border-left-color: var(--ok); }
+.quiz-q.missed { border-left-color: var(--gate); }
+.quiz-n { margin: 0; font-size: 11.5px; color: var(--muted); font-weight: 600; }
+.quiz-context { margin: 2px 0 0; font-size: 12.5px; color: var(--muted); }
+.quiz-question { margin: 3px 0 6px; font-weight: 600; }
+.quiz-opts { display: flex; flex-direction: column; gap: 6px; }
+.quiz-opt {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+}
+/* A locked option is NOT faded: you re-read these after submitting, and the one
+   you got wrong is the one that has to stay legible. */
+.quiz-opt:disabled { color: var(--ink); cursor: default; }
+.quiz-letter { color: var(--muted); font-variant-numeric: tabular-nums; }
+.quiz-opt-text { flex: 1 1 auto; }
+.quiz-opt.picked { border-color: var(--muted); }
+.quiz-opt.right { border-color: var(--ok); background: #f2f9f4; }
+.quiz-opt.missed { border-color: var(--gate); background: var(--gate-bg); }
+.quiz-opt.reveal-correct { border-color: var(--ok); }
+.quiz-tag { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.quiz-verdict { margin: 6px 0 0; font-size: 12.5px; }
+.quiz-verdict.right { color: var(--ok); }
+.quiz-verdict.missed { color: var(--gate); }
+.quiz-whys { margin: 8px 0 0; }
+.quiz-why { margin: 3px 0; font-size: 12px; color: var(--muted); }
+.quiz-why.correct { color: var(--ink); }
+.quiz-footer { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.quiz-footer .note { margin: 0; }
+.quiz-score { margin: 6px 0 0; font-size: 13px; }
+.quiz-legacy { margin: 6px 0 0; padding-left: 20px; color: var(--muted); font-size: 12.5px; }
+/* Both halves of the lock, at a glance beside the button. Pending is grey — "not
+   yet", never "wrong". */
+.quiz-pills { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 0; }
+.quiz-pill { font-size: 11.5px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); }
+.quiz-pill.done { color: var(--ok); border-color: var(--ok); }
+.quiz-pill.pending { color: var(--muted); background: var(--panel); }
+
+.confirm {
+  border: 1px solid var(--muted);
+  border-radius: 6px;
+  padding: 14px 18px 18px;
+  margin: 18px 0;
+  background: var(--panel);
+}
+.confirm h3 { font-size: 14px; margin: 0 0 6px; }
+.confirm .facts { margin: 10px 0; }
+
+/* ------------------------------------------------------------- evidence */
+
+.evidence { margin: 12px 0 2px; }
+.evi-fig { margin: 10px 0; }
+.evi-fig img {
+  display: block;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.evi-fig figcaption { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+.evi-text { margin: 4px 0; }
+.evi-text pre { margin: 6px 0; max-height: 340px; }
+
+/* --------------------------------------------------------- gate history */
+
+.g.gbtn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.g.gbtn:hover { text-decoration: underline; }
+.history-panel {
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--muted);
+  border-radius: 4px;
+  padding: 10px 14px;
+  margin: 8px 0;
+  background: var(--panel);
+}
+.exchange ol { margin: 6px 0; padding-left: 20px; }
+.exchange .decision { margin: 8px 0 4px; }
+/* Taking a gate decision back. Quiet on purpose: it sits under a gate you have
+   already settled, so it must not compete with anything that is actually
+   waiting on you. */
+.reopen textarea { margin-top: 4px; }
+.reopen .gate-actions { margin-top: 8px; }
+
+.report { border: 1px solid var(--line); border-radius: 6px; padding: 4px 16px 12px; margin: 16px 0; background: var(--bg); }
+.report summary { cursor: pointer; padding: 10px 0; color: var(--muted); }
+
+.md h3 { font-size: 13.5px; margin: 16px 0 6px; }
+.md h4 { font-size: 13px; margin: 14px 0 4px; color: var(--muted); }
+.md p { margin: 8px 0; }
+.md ul { margin: 8px 0; padding-left: 20px; }
+
+/* ------------------------------------------------------------------ info */
+
+/* The console's manual. One anchor per section and a plain contents list — that
+   is the whole navigation, no library. The page is wide enough for the diagram
+   and the stage table; the PROSE is what gets the narrow measure, so long lines
+   stay readable without boxing the wide things in. */
+.info { max-width: 1000px; }
+.info section { scroll-margin-top: 12px; }
+.info .md p, .info .md li { max-width: 68ch; line-height: 1.62; }
+.info .md h3 { font-size: 17px; margin: 30px 0 8px; letter-spacing: -0.01em; }
+.info section:first-of-type .md h3 { margin-top: 6px; }
+.info .md h4 { font-size: 13.5px; color: var(--ink); margin: 20px 0 4px; }
+
+/* A markdown pipe table, rendered as a real table. It scrolls sideways inside
+   its own box rather than pushing the page out. */
+.md-table { overflow-x: auto; margin: 12px 0; border: 1px solid var(--line); border-radius: 6px; }
+.md-table table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.md-table th, .md-table td { text-align: left; padding: 8px 12px; vertical-align: top; border-bottom: 1px solid var(--line); }
+.md-table th { font-weight: 500; color: var(--muted); font-size: 11.5px; white-space: nowrap; background: var(--panel); }
+.md-table tr:last-child td { border-bottom: none; }
+
+/* --------------------------------------------------- info: how it works */
+
+/* The static picture of the whole flow: every stage at once, orange where the
+   machine stops and waits. Same language as .spine, but nothing here moves. */
+.flow { margin: 0 0 26px; border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 14px; }
+.flow-track {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  grid-template-rows: repeat(5, auto);
+  gap: 0 10px;
+}
+/* A column per stage, sharing the track's rows, so bars, numbers, labels and the
+   five gates each line up across the whole diagram however long the text above
+   them runs. Without subgrid every gate simply sits under its own column. */
+.flow-stage { display: grid; grid-row: 1 / span 5; grid-template-rows: subgrid; align-content: start; }
+.flow-stage .bar { height: 3px; background: var(--line); border-radius: 2px; }
+.flow-stage.gate .bar { background: var(--gate); }
+.flow-stage .n { font-size: 11.5px; color: var(--faint); margin-top: 5px; }
+.flow-stage .lbl { font-size: 12px; }
+.flow-stage .does { font-size: 11.5px; color: var(--muted); line-height: 1.35; margin-top: 2px; }
+.flow-stage .g { padding-top: 9px; font-size: 11.5px; color: var(--gate); font-weight: 600; }
+.flow-stage .g span { display: block; font-weight: 400; line-height: 1.3; }
+.flow-loop {
+  grid-column: 4 / 9;
+  margin-top: 14px;
+  border-top: 1px dashed var(--muted);
+  padding-top: 5px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.flow-legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 16px; font-size: 11.5px; color: var(--muted); }
+.flow-legend .key { display: inline-flex; align-items: center; gap: 7px; }
+.flow-legend .key i { display: inline-block; width: 20px; height: 3px; border-radius: 2px; background: var(--line); }
+.flow-legend .key.gate i { background: var(--gate); }
+.flow-legend .key.gate { color: var(--gate); }
+.flow-legend .key.loop i { height: 0; border-top: 1px dashed var(--muted); border-radius: 0; }
+.flow figcaption { font-size: 12.5px; color: var(--muted); margin-top: 10px; max-width: 68ch; }
+
+/* Too narrow for ten columns: wrap them, and let the loop note stand alone. */
+@media (max-width: 900px) {
+  .flow-track { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); grid-template-rows: none; gap: 14px 10px; }
+  .flow-stage { display: block; grid-row: auto; }
+  .flow-loop { grid-column: 1 / -1; }
+}
+
+.toc {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 10px 14px;
+  margin: 6px 0 4px;
+}
+.toc ul { margin: 0; padding-left: 18px; }
+.toc li { font-size: 13px; margin: 2px 0; }
+
+/* ------------------------------------------------------------------ misc */
+
+.facts { display: grid; grid-template-columns: 130px 1fr; gap: 4px 14px; margin: 14px 0; font-size: 13px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+/* The base facts rule lives after the main phone block, so its 130px label
+   track otherwise wins the cascade at 320px and lets definitions push the
+   document sideways. Keep the value track explicitly shrinkable. */
+@media (max-width: 719px) {
+  .facts { grid-template-columns: 96px minmax(0, 1fr); }
+}
+.resume-line { display: flex; gap: 8px; align-items: center; margin: 4px 0 0; }
+.resume-line code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 4px 8px; }
+
+.toolbar { display: flex; gap: 8px; margin: 16px 0; flex-wrap: wrap; align-items: center; }
+
+.note { color: var(--muted); font-size: 12.5px; margin: 8px 0; }
+/* One line, on its own line, above the controls that start work. `flex-basis:
+   100%` is what takes it out of the toolbar's row rather than sitting it beside
+   the button, where it would read as a caption. */
+.note.caution { flex: 1 0 100%; margin: 0; }
+.note.err { color: #b3261e; }
+.note.ok { color: var(--ok); }
+
+/* ------------------------------------------------------------- dashboard */
+
+.grid-wrap { padding: 20px 24px 60px; overflow-x: auto; }
+
+/* ----------------------------------------------- dashboard: card anatomy */
+
+/* One shape for every block on this page: title, optional one-line subtitle,
+   content, actions bottom-right. Each block used to invent its own — a bare h4
+   here, a `.note` acting as a heading there, a Refresh floating mid-card — and
+   four shapes is a page you read rather than scan. */
+.card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 12px 16px 14px;
+  margin: 0 0 14px;
+  max-width: 900px;
+}
+/* The issue grid is fifteen columns wide; a 900px measure is for prose. */
+.card.wide { max-width: none; }
+.card-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0 0 8px; }
+.card-head h3 { font-size: 13px; font-weight: 600; margin: 0; }
+.card-sub { margin: 0; color: var(--muted); font-size: 12.5px; }
+/* The stamp reads from the left, the buttons sit bottom-right — `margin-right:
+   auto` is what puts them at opposite ends and still lets them wrap sanely. */
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.card-actions .note { margin: 0 auto 0 0; }
+.card > p:last-child, .card > .note:last-child { margin-bottom: 0; }
+
+/* "How this is measured". Every caveat, model and threshold that used to shout
+   at body weight lives behind one of these — the honesty is why the numbers can
+   be believed, but a caveat that competes with its own number makes both
+   unreadable. Closed by default, and never anything you have to open to act. */
+details.how { margin: 12px 0 0; border-top: 1px solid var(--line); }
+details.how > summary { cursor: pointer; padding: 8px 0 0; color: var(--muted); font-size: 12.5px; }
+details.how > summary:hover { color: var(--ink); }
+details.how .note:first-of-type { margin-top: 6px; }
+
+/* A failure, in one line, with the command that produced it one click below.
+   A wrapped 200-character `gh` invocation in red is noise to everybody. */
+.err-line { margin: 8px 0; font-size: 12.5px; color: #b3261e; }
+.err-line > summary { cursor: pointer; }
+.err-line pre { margin: 6px 0 0; color: var(--ink); max-height: 220px; }
+
+/* ----------------------------------------------- resources: pressure strip */
+
+/* How much room is left, in two numbers. It used to be five, on the Dashboard,
+   and three of them restated the cards directly below it. */
+.strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  max-width: 900px;
+  margin: 0 0 14px;
+}
+.strip .stat { background: var(--bg); padding: 9px 14px; min-width: 0; }
+.strip .v { display: block; font-size: 18px; line-height: 1.25; font-variant-numeric: tabular-nums; }
+.strip .k { display: block; font-size: 11.5px; color: var(--muted); }
+/* The forecast says the committed spikes do not fit. */
+.strip .stat.bad .v { color: var(--bad); }
+/* The totals line above the three inventory groups. */
+.note.totals { margin: 12px 0 6px; font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------- actions on you */
+
+/* The whole feature in one paragraph: every action on you, tier 1 first, each
+   row linking OUT to GitHub. Nothing here posts anything — there is no reply
+   box and there never will be. */
+
+.feed-sec { margin: 2px 0 14px; }
+.feed-sec:last-child { margin-bottom: 0; }
+.feed-sec > h4 {
+  margin: 0 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.feed-sec.one > h4 { color: var(--bad); }
+.feed-sec > .note { margin: 0 0 8px; }
+
+.feed-row {
+  display: block;
+  padding: 9px 0 9px 12px;
+  border-top: 1px solid var(--line);
+  box-shadow: inset 2px 0 0 var(--line);
+}
+.feed-row:last-child { border-bottom: 1px solid var(--line); }
+/* Fix first. The same red edge the rail row carries, so the two views agree. */
+.feed-row.one { box-shadow: inset 3px 0 0 var(--bad); background: var(--bad-bg); }
+.feed-row.two { box-shadow: inset 2px 0 0 var(--gate); }
+.feed-row.three { box-shadow: inset 2px 0 0 var(--line); }
+.feed-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.feed-what { font-weight: 500; }
+.feed-when { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.feed-why { margin: 2px 0 0; font-size: 13px; }
+.feed-detail {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+/* `align-items: center` is not decoration: on a touch device the link-shaped
+   button below grows to a 44px target and the plain anchor does not, so without
+   it the two links in a row sit on different baselines. */
+.feed-links { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 5px; font-size: 12.5px; }
+.feed-links a, .feed-links button.linkish { color: var(--muted); }
+.feed-row.one .feed-links a, .feed-row.one .feed-links button.linkish { color: var(--bad); }
+
+/* --------------------------------------------------------------- uat card */
+
+/* On the issue itself: who tested it, what they said, and when — in a sentence,
+   above everything the card would otherwise open with. */
+.uat-card { border-color: var(--bad); background: var(--bad-bg); }
+.uat-card h3 { color: var(--bad); }
+.uat-card p { margin: 0 0 6px; }
+.uat-card p:last-child { margin-bottom: 0; }
+
+/* ---------------------------------------------------------------- toasts */
+
+/* Unobtrusive by construction: bottom-right on a desktop, bottom of the screen
+   on a phone, above the safe area, never covering the header, and every one has
+   a dismiss. Only the server decides that something is worth a toast — the page
+   draws what it is told and keeps a per-tab record of what it has drawn. */
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 32px));
+}
+.toast {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--gate);
+  border-radius: 6px;
+  background: var(--bg);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  padding: 10px 12px;
+}
+.toast.one { border-left-color: var(--bad); }
+.toast-head { display: flex; align-items: baseline; gap: 8px; }
+.toast-head strong { font-size: 13px; }
+.toast-head .x {
+  margin-left: auto;
+  border: none;
+  background: none;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.toast p { margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }
+/* THE TAKE PROGRESS TOAST. Same corner and same look as the server toasts, one
+   z-index above them: it narrates a job the page is running, and a take lasts
+   seconds, so it wins the corner for that long. */
+.take-toasts { z-index: 31; }
+.take-bar {
+  margin-top: 8px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+/* The fill is --live because it is a thing in progress, the same meaning the
+   green carries on a running worker. It is never red: a bar that goes red on a
+   failed item would say the whole run failed. The failure lines say which did. */
+.take-bar span { display: block; height: 100%; background: var(--live); transition: width 160ms linear; }
+.toast .take-fail { margin-top: 6px; }
+.toast .toast-links { display: flex; align-items: center; gap: 12px; margin-top: 6px; font-size: 12.5px; }
+
+/* --------------------------------------------------------- notify switches */
+
+.notify-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.notify-row:last-of-type { border-bottom: 1px solid var(--line); }
+.notify-what { flex: 1 1 240px; min-width: 0; }
+.notify-what .note { margin: 0; }
+.notify-row select {
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.notify-row select:disabled { color: var(--faint); background: var(--panel); }
+.switch { display: inline-flex; align-items: center; gap: 8px; }
+.switch input { width: 18px; height: 18px; }
+
+/* The router's one-line answer, which four paragraphs of explanation used to
+   bury. */
+.verdict { margin: 0 0 6px; font-size: 13px; }
+.verdict.ready { font-weight: 500; }
+
+/* Fifteen columns scroll inside their own box; the PAGE never goes sideways. */
+.grid-scroll { overflow-x: auto; }
+
+table.grid { border-collapse: collapse; width: 100%; font-size: 13px; }
+table.grid th { text-align: left; font-weight: 500; color: var(--muted); font-size: 11.5px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+table.grid td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.grid tr:hover td { background: var(--panel); }
+table.grid td.n { color: var(--muted); width: 60px; }
+/* WHO RAISED IT. One handle, never wrapped — the column is scanned down for a
+   name, and a handle broken over two lines is the one thing that stops that
+   working. It replaced the self-filed chip in the priority cell, so it earns the
+   same restraint: muted, and no wider than the longest handle needs. */
+table.grid td.who { color: var(--muted); white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.sentry-filters ~ .grid-scroll table.grid td.who { max-width: none; }
+/* THE SENTRY PANEL. Its filters are a row of small controls, not a form:
+   they change the QUERY, so each one costs a request and they belong on one
+   line where the cost is obvious. */
+.sentry-filters { flex-wrap: wrap; gap: 10px; align-items: center; }
+.sentry-filters label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.sentry-filters input[list], .sentry-filters select { font-size: 13px; padding: 3px 6px; }
+.sentry-filters input[list] { width: 120px; }
+.sentry-only { gap: 4px; }
+/* The kind marker sits after the title rather than in a column of its own:
+   it is absent on 99 rows out of 100 and an empty column would cost width on
+   every one of them. */
+.chip.sentry-kind { margin-left: 6px; }
+/* "3x alike" sits with the issue id because that is where you look to tell two
+   rows apart. Cold, not loud: it is a thing to check, not a failure. */
+.chip.sentry-dup { margin-left: 6px; }
+table.grid td.who a { color: inherit; }
+/* The priority cell carries the pill and the self-filed chip together. */
+table.grid .tags { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+table.grid td.t { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--line); margin-right: 3px; }
+
+/* ------------------------------------------------- dashboard: instances */
+
+/* What is running on this machine, in three groups, with the two things that
+   may be stopped. It sits inside the one machine card, under the live numbers,
+   and is fetched on that card's Refresh rather than on the SSE tick: reading it
+   costs a `docker stats` and an `lsof` per port. The router card and the
+   instances panel used to bring their own box; both use `.card` now. */
+.inst-groups { display: grid; gap: 14px; }
+.inst-group { border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px 12px; }
+.inst-group h4 { font-size: 13px; margin: 0 0 6px; font-weight: 500; }
+.inst-group h4 .note { margin: 0 0 0 8px; font-weight: 400; }
+.inst-group ul { list-style: none; margin: 0; padding: 0; }
+.inst-group li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.inst-group li:last-child { border-bottom: none; }
+.inst-group li code { font-size: 12.5px; }
+.inst-group .mem { color: var(--ink); font-variant-numeric: tabular-nums; min-width: 72px; }
+.inst-group .tag { color: var(--muted); font-size: 11.5px; }
+.inst-group .note { font-size: 12px; }
+
+/* --------------------------------------------------- dashboard: summary */
+
+/* The status post. Quiet until a window is picked — nothing is fetched before
+   then — and the text shown is exactly the text the Copy button hands over.
+   The box around it is `.card`; only the window picker is its own thing. */
+.seg { display: inline-flex; }
+.seg button { border-radius: 0; margin-left: -1px; }
+.seg button:first-child { border-radius: 4px 0 0 4px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 4px 4px 0; }
+.seg button.on { border-color: var(--ink); position: relative; z-index: 1; }
+.summary-text {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 4px 16px 12px;
+}
+.summary-text .md p { margin: 14px 0 2px; font-weight: 600; }
+.summary-text .md p:first-child { font-weight: 400; color: var(--muted); }
+.summary-text .md ul { margin: 2px 0; padding-left: 20px; }
+.summary-text .md li { margin: 2px 0; }
+.dot.done { background: var(--muted); }
+.dot.here { background: var(--ink); }
+.dot.gate { background: var(--gate); }
+.linkish { background: none; border: none; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; }
+a { color: inherit; }
+
+/* ------------------------------------------------------------------ touch */
+
+/* Last in the file on purpose. These have to beat the per-component
+   `font: inherit` rules above: below 16px iOS zooms the whole page in the
+   moment a field takes focus, and the console never zooms back out.
+   `hover: none` is the honest test — it is about the input device, not the
+   window width, so a narrow desktop window keeps its compact controls. */
+@media (hover: none) {
+  button:not(.linkish):not(.gbtn):not(.rail-item) { border-color: var(--muted); min-height: 44px; }
+  button.linkish, .g.gbtn { min-height: 44px; display: inline-flex; align-items: center; }
+  /* A disclosure is a tap target too, and the honesty is behind these — an
+     unhittable "How this is measured" is a caveat that has been deleted.
+     Padding rather than flex on purpose: `display: flex` on a summary drops the
+     disclosure triangle in Chrome, and then it does not look like it opens. */
+  details.how > summary, .err-line > summary { padding-top: 13px; padding-bottom: 12px; }
+  select, input, textarea, .acct-pick select, .add-acct input, .view-pick select { font-size: 16px; }
+  select, input, .acct-pick select, .add-acct input { min-height: 44px; }
+  .seg button { padding-left: 14px; padding-right: 14px; }
+  /* A row is a tap target too, and a 32px one is a miss waiting to happen. */
+  .rail-item { padding-top: 14px; padding-bottom: 14px; }
+  /* The links out to GitHub are the only control most feed rows have. */
+  .feed-links a, .toast-links a { min-height: 44px; display: inline-flex; align-items: center; }
+  .toast-head .x { min-width: 44px; min-height: 44px; justify-content: flex-end; display: inline-flex; align-items: center; }
+  table.grid td { padding: 6px 8px; }
+}
+
+/* ------------------------------------------------------- waiting on you */
+
+/* The list behind what used to be a bare number. One line per issue, shaped
+   like every locked button in this console: what stopped, then the one thing
+   that clears it. */
+.waiting { list-style: none; margin: 0; padding: 0; }
+.waiting li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 0 8px 12px;
+  border-top: 1px solid var(--line);
+  box-shadow: inset 2px 0 0 var(--gate);
+}
+.waiting li:last-child { border-bottom: 1px solid var(--line); }
+.waiting-what { font-size: 13px; }
+/* The title is context, not the instruction — it goes last and it goes quiet,
+   and on a phone it takes its own line rather than squeezing the clause above. */
+.waiting-title { flex: 1 1 240px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --------------------------------------------------------- notifications */
+
+/* The log of what was announced. Not the feed: the feed is what still needs
+   you and empties itself, this is a record and does not. */
+.log { list-style: none; margin: 0; padding: 0; }
+.log li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 0 8px 12px;
+  border-top: 1px solid var(--line);
+  box-shadow: inset 2px 0 0 var(--line);
+}
+.log li:last-child { border-bottom: 1px solid var(--line); }
+/* Unread carries weight and an edge — the same orange that means "needs you"
+   everywhere else, because that is what it meant when it was announced. */
+.log li.unread { box-shadow: inset 2px 0 0 var(--gate); font-weight: 500; }
+.log li.unread::before { content: '●'; color: var(--gate); font-size: 9px; line-height: 1; }
+.log-when { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.log-why { flex: 1 1 260px; min-width: 0; font-size: 13px; }
+
+/* The bell's count, on the tab itself. Just the number: a dot AND a number is
+   the same fact twice. */
+.views button .badge {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--gate);
+  color: var(--bg);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* What you sent back, with its own line breaks intact. Same treatment as the
+   review body it answers — a reply is not less structured than the ask. */
+pre.sent { white-space: pre-wrap; margin: 4px 0 0; font: inherit; }
+
+
+/* Is CI green — its own line on a gate card, never a clause inside the summary.
+   A worker described 27 green checks at Gate E and mentioned the missing
+   `CI Success` rollup in its last sentence; the card repeated the paragraph and
+   nothing looked wrong. So this sits ABOVE the prose and is loud unless the
+   answer is a plain yes.
+
+   `unconfirmed` reads as urgently as `red` on purpose. It is not a milder
+   failure — it is the state where nobody knows, which is the one that passes for
+   green at a glance. */
+.ci-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--ok);
+  border-radius: 3px;
+  background: #f2f9f4;
+}
+.ci-line strong { letter-spacing: 0.02em; }
+.ci-note { color: var(--muted); }
+.ci-outstanding {
+  flex-basis: 100%;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.ci-green { border-left-color: var(--ok); background: #f2f9f4; }
+.ci-green strong { color: var(--ok); }
+.ci-red { border-left-color: var(--bad); background: var(--bad-bg); }
+.ci-red strong { color: var(--bad); }
+/* Not a softer red: the same weight, because "nobody knows" is the finding. */
+.ci-unconfirmed { border-left-color: var(--gate); background: var(--gate-bg); }
+.ci-unconfirmed strong { color: var(--gate); }
+
+
+/* A write the worker DRAFTED because the fence stopped it making one. Calm, not
+   alarming: nothing has gone wrong here — the fence worked, and this is the
+   thing it hands back. One link, and the click is your own, on GitHub. */
+.drafted { margin: 8px 0; display: flex; flex-direction: column; gap: 8px; }
+.drafted-item {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ice);
+  border-radius: 3px;
+  background: var(--ice-bg);
+}
+.drafted-head { margin: 0 0 2px; }
+.drafted-title { margin: 0 0 4px; }
+.drafted .note { margin: 0 0 4px; }
+.btn-link { display: inline-block; margin-top: 2px; }
+
+/* ── What this is waiting on ────────────────────────────────────────────────
+   The operator said it twice: the words "pending" and "awaiting" did not say
+   which was which, and the status of these rows could not be seen at all. The
+   facts were already on the wire; they were rendered as sentence-long chips in a
+   strip meant for badges.
+
+   The two halves are styled apart on purpose. `--gate` is the page's one warm
+   colour and it means "this needs you" — so the half that is other people's
+   work must not wear it, however important it is. That is what lets the card be
+   read in one glance instead of read at all. */
+.pending {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 12px 16px 14px;
+  margin: 0 0 14px;
+  max-width: 900px;
+}
+.pending-h {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 4px;
+}
+.pending-h.yours { color: var(--gate); margin-top: 12px; }
+.pending-h:first-child { margin-top: 0; }
+.pending-on { color: var(--ink); font-size: 13.5px; margin: 0; }
+.pending-list { margin: 0; padding-left: 18px; }
+.pending-list li { color: var(--ink); font-size: 13.5px; margin: 0 0 6px; line-height: 1.45; }
+.pending-list li:last-child { margin-bottom: 0; }
+.pending-list a { color: var(--ink); }
+/* His own words, quoted back — supporting, never competing with the item. */
+.pending-detail { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.pending-clear { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+
+/* Finished work, kept but got out of the way. The operator asked for closed
+   issues to be greyed, sunk to the bottom of the list and drawn narrower.
+   It sorts last (see priority.ts) and here it gives back its vertical space:
+   one line of title, tighter padding, everything muted. Still clickable —
+   you do go back to a closed issue — just no longer competing with live work
+   for the top of the rail. */
+.rail-item.finished { padding: 6px 16px; opacity: 0.62; }
+.rail-item.finished .rail-num,
+.rail-item.finished .rail-title { color: var(--muted); }
+.rail-item.finished .rail-title {
+  font-size: 12.5px;
+  /* One line: the title of a closed issue is a reminder, not a briefing. */
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-item.finished .rail-tags { opacity: 0.8; }
+.rail-item.finished:hover { opacity: 1; }
+
+/* The advisory-review line on the pending card. */
+.pending-note { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; }
+
+/* The stage a row is at, on the list — muted, because it is orientation rather
+   than a demand. The gate chips beside it stay the loud ones. */
+.chip.stage-chip { color: var(--muted); border-color: var(--line); font-variant-numeric: tabular-nums; }
+
+/* A fact the console derived that bears on the decision in front of you — code
+   that landed after your QA, a question you left open. Not an error; a caveat
+   that must not be missed while you read the questions below it. */
+.note.warn-line { color: var(--gate); font-size: 13px; margin: 6px 0 0; }
+
+/* The tracker board column, on the list row. Muted like the stage chip — it is
+   orientation, not a demand. */
+.chip.lane-chip { color: var(--muted); border-color: var(--line); }
+
+
+/* ------------------------------------------------- rail: PR number + search */
+
+/* The second number you navigate by, beside the first. Muted so the issue
+   number still reads as the identity of the row. */
+.rail-pr {
+  margin-left: 7px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--faint);
+  letter-spacing: 0.01em;
+}
+.rail-item.on .rail-pr { color: var(--muted); }
+
+.rail-search {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.rail-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 9px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.rail-search input:focus { outline: 2px solid var(--sel-line); outline-offset: -1px; }
+.rail-search .note { white-space: nowrap; font-size: 11px; }
+.rail-search .linkish { margin-left: 6px; }
+.rail-empty { padding: 14px 16px; }
+
+
+/* ------------------------------------------------------ workspace picker */
+
+/* Reads as the label it replaced until you go near it — this is the answer to
+   "where am I", not a control anyone should feel invited to poke on the way
+   past. It grows a border on hover/focus so it is still discoverably a picker. */
+.workspace-pick { display: inline-flex; align-items: center; gap: 6px; }
+.workspace-pick select {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 2px 4px;
+}
+.workspace-pick select:hover { border-color: var(--line); background: var(--bg); }
+.workspace-pick select:focus { outline: 2px solid var(--sel-line); outline-offset: -1px; }
+
+/* ------------------------------------------------- status summary counts */
+
+.counts-picker { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.counts-picker label { display: inline-flex; align-items: center; gap: 5px; }
+.counts-picker input[type='date'] {
+  padding: 5px 8px;
+  font-size: 12.5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+/* THE TRACKER ROW: four numbers, then the graph that shows how they got there.
+   Side by side while there is room; the graph drops below on a narrow pane
+   rather than squeezing the tiles, because the tiles are the thing you read
+   first. */
+.tracker-row { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+.tracker-row .counts-tiles { flex: 1 1 320px; }
+/* SMALL, and it stays small. It was `flex: 1 1 380px` with a full-width svg,
+   so it grew to half the panel and towered over the four numbers it is meant to
+   annotate. The operator asked for something far less intrusive — a simple line
+   graph that fits its box. It is an aside, sized once. */
+.summary-chart { flex: 0 0 auto; width: 300px; max-width: 100%; }
+.summary-chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.summary-chart .note { margin: 4px 0 0; }
+.chart-grid { stroke: var(--line); stroke-width: 1; }
+.chart-tick { font-size: 9px; fill: var(--faint); }
+.chart-label { font-size: 10px; font-weight: 500; }
+/* Not red, not a warning — an absence. The caption below says what it means. */
+.chart-outside { fill: var(--panel); }
+
+/* HOW LONG each leg took, under the four counts of how many. Three small
+   stats, not tiles: they annotate the numbers above rather than competing
+   with them, which is the mistake the graph made first time. */
+.cycle-averages { display: flex; flex-wrap: wrap; gap: 18px; margin: 12px 0 0; }
+.cycle-stat { display: flex; flex-direction: column; gap: 1px; }
+.cycle-stat strong { font-size: 15px; font-variant-numeric: tabular-nums; }
+.cycle-stat > span { font-size: 12px; color: var(--muted); }
+.cycle-stat .note { font-size: 11px; margin: 0; }
+.cycle-warn { flex: 1 0 100%; margin: 2px 0 0; }
+/* The week line, under the range median. Green for shorter, violet for longer
+   — the same two colours the per-ticket verdict uses, so down always means the
+   same thing wherever it appears. Never red: a slower week is a thing to look
+   at, not a failure. */
+.cycle-week { font-size: 11px; }
+.cycle-week.better { color: var(--ok); }
+.cycle-week.worse { color: var(--handover); }
+
+/* The per-ticket line. The verdict is the only coloured thing on it, and
+   `slower` is NOT red: a ticket taking longer than the median is ordinary
+   half the time by construction, and red would make half the board look
+   broken. Orange is not used either — that means "waiting on you" here. */
+.cycle-line { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; margin: 0 0 10px; }
+.cycle-verdict { margin-left: 5px; font-size: 11px; padding: 0 5px; border-radius: 999px; border: 1px solid var(--line); }
+.cycle-verdict.faster { color: var(--ok); border-color: var(--ok); }
+.cycle-verdict.slower { color: var(--handover); border-color: var(--handover); }
+.cycle-verdict.typical { color: var(--faint); }
+
+/* ------------------------------------------------------------------ audit */
+/* The report sits above the rail on the Overview, outside any padded view
+   container, so it carries its own gutters. */
+.audit-wrap { padding: 16px 24px 0; border-bottom: 1px solid var(--line); }
+.audit-verdict { font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; text-transform: uppercase; letter-spacing: 0.02em; }
+/* stuck is the console's one red — the same #b3261e every error line uses —
+   because a dropped ball is the only thing on this card that is truly wrong. */
+.audit-verdict.stuck { color: #b3261e; border-color: #b3261e; }
+/* slow borrows the cycle line's `slower` purple: it is the same verdict. */
+.audit-verdict.slow { color: var(--handover); border-color: var(--handover); }
+.audit-on-pace { margin-top: 10px; }
+.audit-on-pace > summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+/* A text capture: named, linked, and never mistaken for a broken picture. */
+.qa2-file { font-size: 12px; }
+
+.counts-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+/* The tracker card is `wide` so it lines up with the grid and the Waiting card
+   beneath it. Its CONTENTS are not: four numbers spread over a 1440px monitor
+   stop reading as a row you can take in at once. */
+.card.tracker > .counts-tiles,
+.card.tracker > .counts-picker,
+.card.tracker > .note { max-width: 880px; }
+.count-tile {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--bg);
+}
+.count-tile strong { font-size: 26px; font-weight: 650; line-height: 1.1; }
+.count-tile span { color: var(--muted); font-size: 12px; }
+@media (max-width: 719px) { .counts-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.summary-report { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
+.summary-report > summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+
+/* ------------------------------------------------------------- attachments */
+
+.attach { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0 4px; }
+.attach-btn {
+  display: inline-block;
+  padding: 5px 11px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+}
+.attach-btn:hover { background: var(--panel); }
+.attach-btn input { display: none; }
+.attach-done { color: var(--ok); }

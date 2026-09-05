@@ -1,0 +1,26 @@
+{
+  "name": "@worker-console/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "test:baseline": "tsc -p e2e/tsconfig.json && playwright test",
+    "test:baseline:update": "tsc -p e2e/tsconfig.json && playwright test --update-snapshots"
+  },
+  "dependencies": {
+    "@sampatel3/console-tokens": "file:../vendor/console-standard/sampatel3-console-tokens-0.1.0-next.0.tgz",
+    "@sampatel3/console-ui": "file:../vendor/console-standard/sampatel3-console-ui-0.1.0-next.0.tgz",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

@@ -1,0 +1,235 @@
+/*
+ * Worker Console adapter for Console Standard.
+ *
+ * The shared packages own semantic values and reusable components. This file
+ * maps the console's established class vocabulary to those roles while its
+ * domain UI remains in App.tsx. Keep product behaviour out of this layer.
+ */
+
+/* Temporary unlayered bridge: the legacy stylesheet is also unlayered, so this
+ * file is imported after it and wins only where an explicit migration mapping
+ * is needed. It can move into `cs.app` after the legacy rules are layered. */
+  [data-cs-app][data-cs-product="worker"] {
+    --bg: var(--cs-surface);
+    --panel: var(--cs-surface-subtle);
+    --sel: var(--cs-selection);
+    --sel-line: var(--cs-selection-edge);
+    --line: var(--cs-border);
+    --ink: var(--cs-ink);
+    --muted: var(--cs-ink-secondary);
+    --faint: var(--cs-ink-tertiary);
+    --gate: var(--cs-warning);
+    --gate-bg: var(--cs-warning-soft);
+    --ok: var(--cs-success);
+    --bad: var(--cs-danger);
+    --bad-bg: var(--cs-danger-soft);
+    --ice: var(--cs-held);
+    --ice-bg: var(--cs-held-soft);
+    --live: var(--cs-success);
+    --live-ink: var(--cs-success);
+    --live-bg: var(--cs-success-soft);
+
+    min-width: 0;
+    min-height: 100%;
+    background: var(--cs-canvas);
+    color: var(--cs-ink);
+    color-scheme: var(--cs-color-scheme);
+    font-family: var(--cs-font-ui);
+    font-size: var(--cs-base-font-size);
+  }
+
+  [data-cs-app] body {
+    min-width: 0;
+    min-height: 100vh;
+    background: var(--cs-canvas);
+  }
+
+  [data-cs-app] header,
+  [data-cs-app] .rail,
+  [data-cs-app] .detail-pane {
+    background: var(--cs-surface);
+  }
+
+  [data-cs-app] input,
+  [data-cs-app] select,
+  [data-cs-app] textarea {
+    border-color: var(--cs-control-edge);
+    border-radius: var(--cs-radius-control);
+  }
+
+  [data-cs-app] button:where(:not(.linkish):not(.gbtn):not(.rail-item)) {
+    border-color: var(--cs-control-edge);
+    border-radius: var(--cs-radius-control);
+  }
+
+  [data-cs-app] .views button {
+    border-color: transparent;
+    border-radius: var(--cs-radius-surface) var(--cs-radius-surface) 0 0;
+  }
+
+  [data-cs-app] .views button.on {
+    border-bottom-color: var(--cs-selection-edge);
+  }
+
+  [data-cs-app] .tools button.tool {
+    border-color: var(--cs-control-edge);
+  }
+
+  [data-cs-app] button.primary {
+    border-color: var(--cs-ink);
+    background: var(--cs-ink);
+    color: var(--cs-surface);
+  }
+
+  [data-cs-app] button.primary:hover:not(:disabled) {
+    border-color: var(--cs-ink);
+    filter: none;
+  }
+
+  [data-cs-app] button.primary:disabled {
+    border-color: var(--cs-border);
+    background: var(--cs-surface-subtle);
+    color: var(--cs-ink-tertiary);
+    font-weight: 400;
+  }
+
+  [data-cs-app] button.danger {
+    border-color: var(--cs-danger);
+    background: var(--cs-danger-soft);
+    color: var(--cs-danger);
+  }
+
+  [data-cs-app] button.danger:disabled {
+    border-color: var(--cs-border);
+    background: var(--cs-surface);
+    color: var(--cs-ink-tertiary);
+  }
+
+  [data-cs-app] :is(button, a, input, select, textarea, summary):focus-visible {
+    outline: 0;
+    box-shadow:
+      0 0 0 var(--cs-focus-inner-width) var(--cs-ink),
+      0 0 0 var(--cs-focus-outer-width) var(--cs-focus);
+    position: relative;
+    z-index: 2;
+  }
+
+  [data-cs-app] :is(code, pre, .mono) {
+    font-family: var(--cs-font-mono);
+  }
+
+  [data-cs-app] :is(.eyebrow, .product-sub, th, .read-at) {
+    font-size: var(--cs-font-size-xs);
+  }
+
+  [data-cs-app] .rail-item.on {
+    background: var(--cs-selection);
+    border-bottom-color: var(--cs-selection-edge);
+    box-shadow: inset var(--cs-selection-width) 0 0 var(--cs-selection-edge);
+  }
+
+  [data-cs-app] .rail-item:focus-visible {
+    outline: var(--cs-focus-inner-width) solid var(--cs-ink);
+    outline-offset: calc(-1 * var(--cs-focus-inner-width));
+    box-shadow: inset 0 0 0 var(--cs-focus-outer-width) var(--cs-focus);
+  }
+
+  [data-cs-app] .rail-item.on:focus-visible {
+    box-shadow:
+      inset var(--cs-selection-width) 0 0 var(--cs-selection-edge),
+      inset 0 0 0 var(--cs-focus-outer-width) var(--cs-focus);
+  }
+
+  [data-cs-app] .rail-item.gate:focus-visible {
+    box-shadow:
+      inset 2px 0 0 var(--cs-warning),
+      inset 0 0 0 var(--cs-focus-outer-width) var(--cs-focus);
+  }
+
+  [data-cs-app] .rail-item.uat:focus-visible {
+    box-shadow:
+      inset 3px 0 0 var(--cs-danger),
+      inset 0 0 0 var(--cs-focus-outer-width) var(--cs-focus);
+  }
+
+  [data-cs-app] .rail-item.aside:focus-visible {
+    box-shadow:
+      inset 2px 0 0 var(--cs-held),
+      inset 0 0 0 var(--cs-focus-outer-width) var(--cs-focus);
+  }
+
+  [data-cs-app] .rail-item.on.gate:focus-visible {
+    box-shadow:
+      inset var(--cs-selection-width) 0 0 var(--cs-warning),
+      inset 0 0 0 var(--cs-focus-outer-width) var(--cs-focus);
+  }
+
+  [data-cs-app] .rail-item.on.uat:focus-visible {
+    box-shadow:
+      inset 5px 0 0 var(--cs-danger),
+      inset 0 0 0 var(--cs-focus-outer-width) var(--cs-focus);
+  }
+
+  [data-cs-app] .rail-item.on.aside:focus-visible {
+    box-shadow:
+      inset var(--cs-selection-width) 0 0 var(--cs-held),
+      inset 0 0 0 var(--cs-focus-outer-width) var(--cs-focus);
+  }
+
+  [data-cs-app] .card,
+  [data-cs-app] .connection-card {
+    border-radius: var(--cs-radius-surface);
+    box-shadow: none;
+  }
+@media (prefers-reduced-motion: reduce) {
+  [data-cs-app] *,
+  [data-cs-app] *::before,
+  [data-cs-app] *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  [data-cs-app] :is(button, a, input, select, textarea, summary):focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+    box-shadow: none;
+  }
+
+  [data-cs-app] .rail-item:focus-visible {
+    outline-offset: -2px;
+  }
+
+  [data-cs-app] .rail-item:is(.on, .gate, .uat, .aside) {
+    position: relative;
+  }
+
+  [data-cs-app] .rail-item:is(.gate, .uat, .aside)::before {
+    width: 3px;
+    position: absolute;
+    inset-block: 2px;
+    inset-inline-start: 0;
+    background: ButtonText;
+    content: "";
+    forced-color-adjust: none;
+    pointer-events: none;
+  }
+
+  [data-cs-app] .rail-item.on::before {
+    width: 6px;
+    position: absolute;
+    inset-block: 2px;
+    inset-inline-start: 0;
+    background: Highlight;
+    content: "";
+    forced-color-adjust: none;
+    pointer-events: none;
+  }
+
+  [data-cs-app] .rail-item:focus-visible::before {
+    inset-inline-start: var(--cs-focus-outer-width);
+  }
+}

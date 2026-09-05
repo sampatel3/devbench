@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" role="img" aria-label="DevBench mark">
+  <!-- The bench: a slab on two legs, with five pieces of work sitting on it —
+       one for each human gate. -->
+  <rect width="96" height="96" rx="20" fill="#af5709"/>
+  <g fill="#ffffff">
+    <rect x="22" y="36" width="6" height="6" rx="1.5"/>
+    <rect x="33" y="36" width="6" height="6" rx="1.5"/>
+    <rect x="44" y="36" width="6" height="6" rx="1.5"/>
+    <rect x="55" y="36" width="6" height="6" rx="1.5"/>
+    <rect x="66" y="36" width="6" height="6" rx="1.5"/>
+    <rect x="18" y="46" width="60" height="10" rx="3"/>
+    <rect x="24" y="56" width="8" height="16" rx="2"/>
+    <rect x="64" y="56" width="8" height="16" rx="2"/>
+  </g>
+</svg>

@@ -1,0 +1,35 @@
+<!doctype html>
+<html
+  lang="en"
+  data-cs-app
+  data-cs-product="worker"
+  data-cs-theme="light"
+  data-cs-density="compact"
+>
+  <head>
+    <meta charset="utf-8" />
+    <!-- viewport-fit=cover: added to the Home Screen the console runs full-bleed,
+         so the header pads itself out of the status bar with env(safe-area-*). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>worker console</title>
+    <!-- Add to Home Screen: a manifest, an icon and a name. There IS a service
+         worker now (/sw.js) but it exists only to receive Web Push, and it is
+         registered only when you turn phone notifications on in Settings — never
+         on load. It has NO fetch handler and caches nothing: this page is live
+         state, a cached copy of live state is a page telling you lies about what
+         is running on the Mac, and off the tailnet it should still fail to load,
+         visibly. -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/png" href="/icon-192.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="worker console" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

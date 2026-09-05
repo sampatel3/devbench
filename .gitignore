@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.env*
+*.local
+.DS_Store
+state.json
+accounts.json
+connections.json
+runs.jsonl
+*.gate-provenance.jsonl
+# The operator's gate decisions — live data, same class as state.json and
+# runs.jsonl. It is the record of what they approved and when; it does not
+# belong in history.
+decisions.jsonl
+push-keys.json
+actions.json
+runs/
+ui/dist/
+ui/test-results/
+ui/playwright-report/
+# `tsc -b`, the documented type-check, leaves this behind even under `noEmit`.
+*.tsbuildinfo

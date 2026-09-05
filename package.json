@@ -1,0 +1,15 @@
+{
+  "name": "worker-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local dashboard for finding assigned GitHub or Linear work and moving tickets to done. Binds 127.0.0.1:4400 only.",
+  "workspaces": ["orchestrator", "ui"],
+  "scripts": {
+    "build": "npm run build -w ui && npm run build -w orchestrator",
+    "start": "node orchestrator/dist/index.js",
+    "dev": "npm run dev -w orchestrator",
+    "test": "npm run test -w orchestrator",
+    "test:ui-baseline": "npm run test:baseline -w ui"
+  },
+  "engines": { "node": ">=20" }
+}

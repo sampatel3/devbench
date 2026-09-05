@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "devbench",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start"],
+      "port": 4400,
+      "url": "http://127.0.0.1:4400"
+    }
+  ]
+}
