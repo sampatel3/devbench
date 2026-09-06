@@ -3,6 +3,15 @@
   <img src="assets/logo.svg" alt="DevBench" width="300">
 </picture>
 
+> **Archived, and not maintained.** This was a personal tool, published as a
+> snapshot rather than grown as a project. Most of what it does — a worktree per
+> task, parallel agents, diffs and a browser beside them — is now done better and
+> for free by [Orca](https://github.com/stablyai/orca). The two ideas here that
+> are still worth taking are that **a gate can be a process exit** (the worker
+> writes a file and dies, so waiting for a human costs nothing and five gates are
+> affordable) and that **the harness, not the agent, should produce the evidence**
+> for a human review. The code stays up for anyone who wants to read those parts.
+
 An operator's console for running coding-agent workers against tracker issues,
 with five human gates.
 
