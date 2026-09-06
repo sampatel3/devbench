@@ -117,6 +117,94 @@ describe('parseQuiz', () => {
   });
 });
 
+/**
+ * THE SHAPE FIVE ISSUES WROTE.
+ *
+ * `options: ["a","b","c"]` with a sibling `why: ["…","…","…"]`, and `brief` as a
+ * paragraph instead of a list. `parseQuiz` returned null on every one, the card
+ * showed the red "no quiz" block and the gate bounced — and the same mistake
+ * came back AFTER a bounce that spelled out the correct shape. Two arrays of
+ * equal length carry exactly what a list of objects carries, so this is a
+ * container problem, and the parser fixes containers.
+ */
+describe('parseQuiz — coercing the shape workers actually write', () => {
+  const PARALLEL = {
+    brief: 'Withdraw now asks before it changes the quote, and a withdrawn quote cannot be accepted.',
+    questions: [
+      {
+        context: 'Withdrawn is terminal.',
+        question: 'What happens if a broker tries to accept a withdrawn quote?',
+        options: ['Nothing — Accept is no longer offered', 'It accepts and reopens the quote'],
+        why: ['Withdrawn is terminal, so the action is gone.', 'That was the bug; step 2 shows it is gone.'],
+        correct: 0,
+      },
+    ],
+  };
+
+  it('zips parallel options[] and why[] into the option objects they meant', () => {
+    const q = parseQuiz(PARALLEL)!;
+    expect(q.questions).toHaveLength(1);
+    expect(q.dropped).toBe(0);
+    expect(q.questions[0]!.options).toEqual([
+      { text: 'Nothing — Accept is no longer offered', why: 'Withdrawn is terminal, so the action is gone.' },
+      { text: 'It accepts and reopens the quote', why: 'That was the bug; step 2 shows it is gone.' },
+    ]);
+    expect(q.questions[0]!.correct).toBe(0);
+  });
+
+  it('reads a paragraph brief as the one bullet it is, and a multi-line one as its lines', () => {
+    expect(parseQuiz(PARALLEL)!.brief).toEqual([
+      'Withdraw now asks before it changes the quote, and a withdrawn quote cannot be accepted.',
+    ]);
+    const multi = parseQuiz({ ...PARALLEL, brief: '- Withdraw asks first\n* A withdrawn quote is terminal\n\n' })!;
+    expect(multi.brief).toEqual(['Withdraw asks first', 'A withdrawn quote is terminal']);
+  });
+
+  /**
+   * The one thing coercion must never do. `correct` is an index into the option
+   * list, so pairing two arrays of different lengths would silently move the
+   * answer key — the same crime as dropping an option and renumbering.
+   */
+  it('VOIDS a question whose parallel arrays do not line up, rather than guessing the pairing', () => {
+    const q = parseQuiz({
+      questions: [
+        { question: 'q?', options: ['a', 'b', 'c'], why: ['x', 'y'], correct: 0 },
+        GOOD.questions[0],
+      ],
+    })!;
+    expect(q.questions).toHaveLength(1);
+    expect(q.dropped).toBe(1);
+  });
+
+  it('VOIDS a question whose options are strings with no reasoning at all — a `why` is not invented', () => {
+    expect(parseQuiz({ questions: [{ question: 'q?', options: ['a', 'b'], correct: 0 }] })).toBeNull();
+    expect(parseQuiz({ questions: [{ question: 'q?', options: ['a', 'b'], why: 'not an array', correct: 0 }] })).toBeNull();
+  });
+
+  it('still refuses a genuinely unreadable quiz — null is the locked gate, and it stays', () => {
+    expect(parseQuiz({ brief: 'a paragraph and nothing else' })).toBeNull();
+    expect(parseQuiz({ questions: [{ question: 'q?', options: [1, 2], why: ['x', 'y'], correct: 0 }] })).toBeNull();
+    expect(parseQuiz({ questions: [{ options: ['a', 'b'], why: ['x', 'y'], correct: 0 }] })).toBeNull();
+  });
+
+  it('holds the answer key to the same rules when the options arrived as arrays', () => {
+    const bad = { question: 'q?', options: ['a', 'b'], why: ['x', 'y'] };
+    expect(parseQuiz({ questions: [{ ...bad, correct: 2 }] })).toBeNull();
+    expect(parseQuiz({ questions: [{ ...bad, correct: -1 }] })).toBeNull();
+    expect(parseQuiz({ questions: [{ ...bad, options: ['a'], why: ['x'], correct: 0 }] })).toBeNull();
+  });
+
+  it('never throws on the coerced paths either', () => {
+    for (const junk of [
+      { questions: [{ question: 'q?', options: ['a'], why: null, correct: 0 }] },
+      { brief: 42, questions: [GOOD.questions[0]] },
+      { brief: ['ok', 42], questions: [GOOD.questions[0]] },
+    ]) {
+      expect(() => parseQuiz(junk)).not.toThrow();
+    }
+  });
+});
+
 describe('quizKey', () => {
   it('is stable for a quiz carried forward byte for byte — their answers still count', () => {
     expect(quizKey(parseQuiz(GOOD)!)).toBe(quizKey(parseQuiz(structuredClone(GOOD))!));

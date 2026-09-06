@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseGateFile, parseIssueState } from '../src/state.js';
+import { gateFileOrRefusal, parseGateFile, parseIssueState } from '../src/state.js';
 
 describe('parseGateFile', () => {
   const good = JSON.stringify({
@@ -61,6 +61,48 @@ describe('parseGateFile', () => {
 
   it('returns null when issue is missing — we would not know whose gate it is', () => {
     expect(parseGateFile(JSON.stringify({ gate: 'A', summary: 's' }))).toBeNull();
+  });
+});
+
+/**
+ * Null is the right answer for `.gate.json` — "this worker is not parked" needs
+ * no explanation. It is the wrong answer for a line of `.gate-history.jsonl`,
+ * where it means a round is gone: two of them went missing on this machine
+ * because workers wrote invented gate letters. Same rules, one extra sentence.
+ */
+describe('gateFileOrRefusal — the same parse, saying why it refused', () => {
+  const refusal = (o: unknown) => {
+    const r = gateFileOrRefusal(typeof o === 'string' ? o : JSON.stringify(o));
+    return 'refused' in r ? r.refused : null;
+  };
+
+  it('names an invented gate letter, verbatim — that is what makes it findable', () => {
+    expect(refusal({ issue: 4400, gate: 'B-postscript', summary: 's' })).toBe("bad gate letter 'B-postscript'");
+    expect(refusal({ issue: 4400, gate: 'B-resume-note', summary: 's' })).toBe("bad gate letter 'B-resume-note'");
+  });
+
+  it('tells "no letter at all" apart from "a letter we do not allow"', () => {
+    expect(refusal({ issue: 4400, summary: 's' })).toBe('no gate letter');
+    expect(refusal({ issue: 4400, gate: 3, summary: 's' })).toBe('bad gate letter \'3\'');
+  });
+
+  it('names the other two refusals', () => {
+    expect(refusal('{ half a line')).toBe('not valid JSON');
+    expect(refusal('"a string"')).toBe('not a JSON object');
+    expect(refusal({ gate: 'A', summary: 's' })).toBe('no issue number');
+  });
+
+  it('truncates a runaway value so one bad line cannot take over a card', () => {
+    const said = refusal({ issue: 1, gate: 'B'.repeat(300), summary: 's' })!;
+    expect(said.length).toBeLessThan(60);
+    expect(said.endsWith("…'")).toBe(true);
+  });
+
+  it('agrees with parseGateFile on every input — one rule, one place', () => {
+    for (const raw of ['{ half a line', '"x"', '{"issue":1}', '{"issue":1,"gate":"c","summary":"s"}']) {
+      const r = gateFileOrRefusal(raw);
+      expect(parseGateFile(raw)).toEqual('gate' in r ? r.gate : null);
+    }
   });
 });
 

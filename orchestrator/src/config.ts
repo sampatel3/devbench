@@ -10,6 +10,14 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GB = 1024 ** 3;
 const num = (v: string | undefined, fallback: number) => (v && !Number.isNaN(Number(v)) ? Number(v) : fallback);
 
+/** A TCP port, or null. There is deliberately no fallback: the one setting that
+ *  uses this decides whether a whole feature runs, and a guessed port would send
+ *  a browser at whatever happened to be listening. */
+const portOrNull = (v: string | undefined): number | null => {
+  const n = Number(v?.trim());
+  return Number.isInteger(n) && n > 0 && n < 65_536 ? n : null;
+};
+
 /**
  * The one container this console offers to restart. A Supabase edge runtime is
  * the only kind of container proven safe to restart here (12s, database
@@ -330,6 +338,16 @@ export function loadConfig(env = process.env, warn = (l: string) => console.warn
     // every poll and state.json is written on nearly every event; keeping them
     // apart keeps each write small.
     actionsFile: env.ACTIONS_FILE ?? join(dirname(stateFile), 'actions.json'),
+    // The last successful poll's GitHub reading — issues, both PR maps, blocked
+    // notes, lanes and when they were READ — written whole on every good poll
+    // and loaded at startup as explicitly-stale seed data. It is what stops a
+    // restart inside a bad GitHub hour from blanking the board: the first poll's
+    // failure fallbacks land on this instead of on an empty process. Beside the
+    // state file for the same reason runs.jsonl is — every test redirects
+    // STATE_FILE and this follows it. Separate FROM state.json because it is
+    // derived data rewritten whole per poll, and a corrupt copy must cost one
+    // stale-looking startup, never a running worker's re-attach row.
+    githubSnapshotFile: env.GITHUB_SNAPSHOT_FILE ?? join(dirname(stateFile), 'github-snapshot.json'),
     // The VAPID keypair for phone push, generated on first use and written 0600.
     // It is a SECRET and this repo's .gitignore names its secrets individually,
     // so `push-keys.json` was added there in the same change that created this.
@@ -401,5 +419,35 @@ export function loadConfig(env = process.env, warn = (l: string) => console.warn
     // The Settings "Check login" button runs a real `claude`. A hung probe must
     // not be able to sit on the UI, so it gets a hard stop.
     loginProbeTimeoutMs: num(env.LOGIN_PROBE_TIMEOUT_MS, 20_000),
+
+    /**
+     * THE BEFORE HALF OF EVERY SCREENSHOT PAIR — the dev server running the
+     * UNTOUCHED checkout, which is the only place a "before" can come from.
+     *
+     * Null by default and never guessed, which is a deliberate refusal rather
+     * than a missing default. The convention the skill documents is that the
+     * primary checkout on 8080 is the before server (`references/gate-c.md`:
+     * "If the BEFORE server (primary checkout, port 8080) is up") — and 8080 is
+     * also the port `instances.ts` protects by number, because it serves edge
+     * functions for every worktree at once. Reading a convention as a default is
+     * how a console starts pointing a browser at a port nobody chose, so the
+     * operator names it or the console takes no before captures and says so in
+     * one line on the card.
+     *
+     * Setting it to 8080 is fine and is what most machines will want. Driving a
+     * port is a read; it is `stopDevServerFor` that may never touch 8080, and
+     * that fence is untouched by this one.
+     */
+    baselinePort: portOrNull(env.BASELINE_PORT),
+    /**
+     * A Playwright `storageState` file the OPERATOR created — the only auth the
+     * capture runner has, and the only one it will ever be given here.
+     *
+     * The console hands this path to the browser and never opens it. There is no
+     * code path in capture.ts that reads, types, stores or logs a credential,
+     * and this is the field that keeps it that way: a signed-in capture is one
+     * the operator already produced with the repo's own test tooling.
+     */
+    qaStorageState: env.QA_STORAGE_STATE?.trim() || null,
   };
 }

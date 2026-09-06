@@ -53,10 +53,11 @@ The console names skills to every worker it spawns, and the one it checks for is
 `.claude/skills`, because a worker runs with its working directory inside a
 worktree of the repo being worked, not here — a project-scoped skill would be
 invisible to every one of them. So it is linked into the account config
-directory instead, and that is what the script does. It also picks up any shared
-skills you keep in a separate repository beside this one (`CLAUDE_SKILLS_DIR`
-points elsewhere), and it never overwrites anything that is not a symlink it
-already owns.
+directory instead, and that is what the script does: every directory under this
+repo's `skills/` that has a `SKILL.md` is linked, never copied, so editing one
+here is picked up by the next worker with nothing to re-run. Add your own team's
+skills beside `issue-pipeline` and they are linked too. It never overwrites
+anything that is not a symlink it already owns.
 
 A worker that cannot find a skill is never told so. It is simply instructed to
 apply something that is not there, and the only symptom is prose that quietly
@@ -290,6 +291,23 @@ parse — a bare regex would let a bot comment, or the console's own worker runn
 convention the console hard-codes: if your team words a verdict differently,
 `uat.ts` is the single place that decides what one looks like.
 
+### What a closed row says
+
+Back to console behaviour, and it is what the verdict parse above is for.
+
+**The console writes down what QA had said at the close**, the first time it
+sees an issue closed, and never rewrites it. Closures arrive with no verdict on
+them more often than anyone expects, and some arrive over a tester's standing
+`Fail` or `Partial Pass` — so a closed row no longer infers a sign-off from the
+fact of the close. It reads `closed with no QA verdict recorded`, or it names
+the person who passed it, and a close made over a standing send-back is
+**fix-first** in the feed.
+
+A row the console could not read a verdict for keeps the sentence it always had:
+absence is "never established", not "nobody verified it". A `Pass` posted after
+the close is true and does not change the record, because it was not true at the
+close.
+
 ### Where your issues come from
 
 Not everything in your queue was handed to you. **Workers spin issues off** — a
@@ -308,7 +326,14 @@ Two chips answer different questions:
 - **`needs triage`** — the priority pill, when nobody has ranked it. A
   `needs-triage` label means the same thing, so it is never shown twice; an issue
   with a priority *and* a stale label shows the priority. A teammate's issue reads
-  `needs triage` as often as yours.
+  `needs triage` as often as yours. A **closed** issue never reads it at all:
+  nothing takes the label off when the work finishes, so plenty of closed issues
+  still carry it, and the console cannot take it off either — it writes no
+  labels. It stops asking instead. The pill, the caution above the start button
+  and the ordering all treat closed work as triaged, because ranking work that is
+  finished is not a question anybody can answer. That is exclusion from the
+  question, never from the record: the label itself stays on the row's label
+  line, and on GitHub.
 - **`self-filed`** — raised from this machine, by you or by a worker. Provenance
   and nothing else.
 
@@ -377,6 +402,35 @@ a gate came to be recorded as approved with no answers at all.
 `evidence` array of paths under `docs/issue-pipeline/plans/`; screenshots render
 inline, transcripts and SQL as expandable text — so you review evidence at Gate C,
 before anything is pushed.
+
+**The console takes the missing screenshots itself.** Workers do capture, and the
+PNGs pile up on disk — but well over half of all Gate C send-backs were rounds
+spent asking for a shot that had a null leg while the files sat right there. A
+capture that needs a person to press something is a capture that will be missing
+on the round where it mattered, so the console now drives the app during the poll
+that first sees a Gate C, before you ever see the card.
+
+It can do that for one specific kind of step: one that says **which screen** it
+is on. A step carrying a `route` — an app path such as `/items/1234`, and
+nothing else, because a path carries no host and therefore no destination a
+worker could choose — gets its null legs captured: the `after` from that
+worktree's registered port, the `before` from `BASELINE_PORT`, both at 1280×800
+with animations frozen. The pictures land under
+`docs/issue-pipeline/plans/qa-<N>/auto/` and are filed in `evidence` as well as
+on the step.
+
+It fills gaps only. A shot the worker wrote is never overwritten, and a step with
+no route keeps every rule it had — which is what leaves SQL and transcript
+evidence to the sanctioned null pair and a `Limits:` note. A pair that comes back
+byte-identical is flagged on the step, because that pair proves nothing. **When
+it cannot run, the card says why in one line** — the dev server is down, no
+baseline is configured, Chromium is not installed — with the command that fixes
+it, and a **Capture shots** button to try again.
+
+Two settings, both optional and neither guessed: `BASELINE_PORT` (the untouched
+checkout's dev server; without it no `before` is taken) and `QA_STORAGE_STATE` (a
+Playwright storage-state file you produced with your repo's own test tooling —
+the only auth the capture has, and nothing here reads or types a credential).
 
 **Terminal takeover.** Every row shows `claude --resume <id>` or `CODEX_HOME=…
 codex … resume <thread-id>`. Two owners of one conversation fork it, so the
@@ -533,6 +587,16 @@ the spot, and every worker that ends runs a full poll. So does **Sync**, the
 deliberate escape hatch. What the fifteen minutes governs is how long an event
 **on GitHub** can sit unnoticed, which is why the header stamps when GitHub was
 last read. Fifteen-minute-old data must never look live.
+
+**A restart keeps the last good read.** Every successful poll writes what it read
+to `github-snapshot.json` (beside `state.json`), and the console loads it at
+startup as explicitly-stale seed data. So a restart during an hour when GitHub is
+refusing reads — an exhausted GraphQL quota, say — shows the old statuses under
+the old "GitHub read" stamp, with the poll error beside it saying why the stamp
+has stopped moving, instead of degrading every row to a bare checkpoint. A row
+whose real state simply could not be read is worse than useless: it invites you
+to act on a status nobody established. The first poll that succeeds replaces the
+file; a failed one touches neither the board nor the file.
 
 The memory clocks are independent: slowing the GitHub poll was not allowed to slow
 the guard that keeps this laptop up. `POLL_MS`, `RESOURCES_MS`,
@@ -833,6 +897,15 @@ Enforced in code, not by convention.
 - **Evidence files are served through a fence** — resolved inside that one
   worktree, symlinks followed, anything escaping `docs/issue-pipeline/plans/`
   refused. GET only, no directory listing, size-capped.
+- **The screenshot capture drives one browser and writes two things.** It
+  navigates only to `http://127.0.0.1:<port>` addresses built from the port
+  registry and your own `BASELINE_PORT`, never to anything a worker wrote; it
+  writes PNGs only under `docs/issue-pipeline/plans/qa-<N>/auto/`; and it fills
+  null capture legs in `.gate.json`, which is the second and last place the
+  console writes into a worktree. It never runs while that worktree's worker is
+  running, never overwrites a path the worker wrote, and refuses to stamp
+  anything at all if the file moved while the browser was running. Auth is a
+  Playwright storage-state file you configured; no credential is read or typed.
 - **No credential is ever typed, read, stored or displayed.** Not by a worker, not
   by the console. The doctor reports booleans about files only. Logging in is
   always you, in a terminal.

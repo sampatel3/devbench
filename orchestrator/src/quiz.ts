@@ -66,6 +66,67 @@ export type Quiz = {
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
 
 /**
+ * THE ONE WRONG SHAPE THAT IS WORTH READING ANYWAY: parallel arrays.
+ *
+ * Five separate issues wrote the options as `options: ["a", "b", "c"]` with a
+ * sibling `why: ["…", "…", "…"]` instead of a list of `{text, why}` objects.
+ * `parseQuiz` returned null on every one, the card showed the red "no quiz"
+ * block, and the gate bounced — and the mistake recurred AFTER a bounce that
+ * spelled out the fix, which is what makes it a parser problem rather than a
+ * worker problem. The two arrays carry exactly the information the objects do.
+ *
+ * Zipping is only safe while the lengths match. Different lengths means the
+ * author's own pairing is unknown, and `correct` is an INDEX into it: guessing
+ * there is the same crime as renumbering the options, so a mismatch voids the
+ * question like any other malformed option set.
+ */
+function zipParallelOptions(options: unknown[], whys: unknown): QuizOption[] | null {
+  if (options.length === 0 || !options.every((o) => typeof o === 'string')) return null;
+  if (!Array.isArray(whys) || whys.length !== options.length) return null;
+  const out: QuizOption[] = [];
+  for (let i = 0; i < options.length; i++) {
+    const text = str(options[i]);
+    const why = str(whys[i]);
+    if (!text || !why) return null;
+    out.push({ text, why });
+  }
+  return out;
+}
+
+/** The shape the skill asks for: a list of `{text, why}` objects. */
+function parseOptionObjects(options: unknown[]): QuizOption[] | null {
+  const out: QuizOption[] = [];
+  for (const o of options) {
+    if (typeof o !== 'object' || o === null) return null;
+    const text = str((o as Record<string, unknown>).text);
+    const why = str((o as Record<string, unknown>).why);
+    if (!text || !why) return null;
+    out.push({ text, why });
+  }
+  return out;
+}
+
+/**
+ * `brief` as bullets, whatever it arrived as.
+ *
+ * The same five issues that wrote parallel option arrays wrote `brief` as one
+ * paragraph instead of a list. A string is not junk here — it is the bullets
+ * with the array left off, so it is split on its own line breaks and any list
+ * marker the author typed is dropped rather than rendered twice inside the
+ * card's own bullet. A one-line paragraph becomes one bullet, which is what it
+ * always was.
+ */
+function parseBrief(raw: unknown): string[] {
+  const lines = typeof raw === 'string' ? raw.split('\n') : Array.isArray(raw) ? raw : [];
+  const out: string[] = [];
+  for (const line of lines) {
+    const bullet = str(line)?.replace(/^[-*•]\s+/, '').trim();
+    if (bullet) out.push(bullet);
+  }
+  return out;
+}
+
+/**
  * One question, or null.
  *
  * A malformed OPTION voids the whole question rather than being dropped on its
@@ -79,14 +140,10 @@ function parseQuestion(raw: unknown): QuizQuestion | null {
   const question = str(obj.question);
   if (!question) return null; // a question with no question is not a question
   if (!Array.isArray(obj.options)) return null;
-  const options: QuizOption[] = [];
-  for (const o of obj.options) {
-    if (typeof o !== 'object' || o === null) return null;
-    const text = str((o as Record<string, unknown>).text);
-    const why = str((o as Record<string, unknown>).why);
-    if (!text || !why) return null;
-    options.push({ text, why });
-  }
+  // Coercion first, then the shape the skill asks for. The zip declines
+  // anything that is not a list of strings, so the normal path is untouched.
+  const options = zipParallelOptions(obj.options, obj.why) ?? parseOptionObjects(obj.options);
+  if (options === null) return null;
   if (options.length < 2 || options.length > 4) return null;
   const correct = obj.correct;
   if (typeof correct !== 'number' || !Number.isInteger(correct)) return null;
@@ -98,6 +155,11 @@ function parseQuestion(raw: unknown): QuizQuestion | null {
  * Parse the `quiz` block out of a raw `.gate.json`. Tolerant on the same
  * principle as `parseManualQa` and `parseEvidence`: never throws, and a quiz
  * with one bad question still shows the good ones.
+ *
+ * Tolerant now also means COERCING the two shapes workers actually wrote —
+ * parallel `options[]`/`why[]` arrays, and `brief` as a paragraph — because
+ * both carry the whole quiz and only the container is wrong. Nothing is
+ * guessed: a shape that would need the answer key inferred is still voided.
  *
  * No usable question at all returns null, which is not a silent failure: the
  * card shows the red "no quiz" block, the gate stays locked, and one click asks
@@ -116,10 +178,7 @@ export function parseQuiz(raw: unknown): Quiz | null {
     }
   }
   if (questions.length === 0) return null;
-  const brief = Array.isArray(obj.brief)
-    ? obj.brief.map(str).filter((b): b is string => b !== null)
-    : [];
-  return { brief, questions, dropped };
+  return { brief: parseBrief(obj.brief), questions, dropped };
 }
 
 /**

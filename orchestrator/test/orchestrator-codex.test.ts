@@ -53,6 +53,18 @@ function persisted(): Record<string, Record<string, unknown>> {
   return JSON.parse(readFileSync(stateFile, 'utf8')) as Record<string, Record<string, unknown>>;
 }
 
+/**
+ * The gate C capture, landed on disk.
+ *
+ * The console takes the screenshots itself on the poll that first sees a gate C
+ * stop, and files what happened under `captures` — so the state file gains a key
+ * on the console's own account, some time after the row has settled at the gate.
+ * Every byte-for-byte snapshot in this file has to let that land first, or it
+ * fences the capture instead of the mutation it was written to catch. Keyed on
+ * the gate file's bytes, so it happens once and then stays put.
+ */
+const captureLanded = (): boolean => persisted().captures?.[String(ISSUE)] !== undefined;
+
 beforeEach(() => {
   home = realpathSync(mkdtempSync(join(tmpdir(), 'wc-orch-codex-home-')));
   canonicalClaude = join(home, '.claude');
@@ -262,6 +274,8 @@ describe('Codex through the orchestrator', () => {
     await waitFor('Codex to stop at its gate', () => row(o).status === 'at-gate' && o.state().activeCount === 0);
     await waitFor('the learned Codex thread to be saved', () => persisted().agentSessions?.[String(ISSUE)] === THREAD);
 
+    await waitFor('the gate C capture to land on disk', captureLanded);
+
     writeFileSync(join(codexHome, 'hooks.json'), '{}\n');
     const gateBefore = readFileSync(gateFile(), 'utf8');
     const stateBefore = readFileSync(stateFile, 'utf8');
@@ -366,6 +380,7 @@ describe('Codex through the orchestrator', () => {
       commentBlock: row(second).commentBlock,
       reviewBlock: row(second).reviewBlock,
     });
+    await waitFor('the gate C capture to land on disk', captureLanded);
     writeFileSync(join(codexHome, 'hooks.json'), '{}\n');
     const gateBefore = readFileSync(gateFile(), 'utf8');
     const stateBefore = readFileSync(stateFile, 'utf8');
@@ -433,6 +448,7 @@ describe('Codex through the orchestrator', () => {
         return false;
       }
     });
+    await waitFor('the gate C capture to land on disk', captureLanded);
     const gateBefore = readFileSync(gateFile(), 'utf8');
     const stateBefore = readFileSync(stateFile, 'utf8');
     const decisionsBefore = readFileSync(decisionsFile, 'utf8');

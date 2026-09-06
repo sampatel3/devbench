@@ -90,3 +90,56 @@ export function staleBanner({ fetchedAt, error, resetAt, empty, truncated }: Ban
     'Rows below may already be handled.'
   );
 }
+
+/**
+ * What a read that took the OTHER road says for itself. Null when the poll went
+ * the usual way, which is almost every poll.
+ *
+ * The rule this file already keeps, pointed the other way. `staleBanner` exists
+ * so a stale page never looks fresh; this exists so a DEGRADED read never looks
+ * like the full one — and, when it IS the full one, so it never looks like a
+ * failure either. Those are two different sentences in two different registers,
+ * and the line carries its own, because the page cannot tell them apart from the
+ * words alone. A whole read renders quiet: the map is complete, every row below
+ * knows where its PR stands, and a warning over a correct board teaches the
+ * operator to ignore warnings. A CAPPED read renders as a warning, because the
+ * board below it has rows that have gone to "cannot say" — and styling that like
+ * the "GitHub read HH:MM" stamp is how the one case worth acting on gets read as
+ * furniture.
+ *
+ * It says how many it found because that number is the whole claim. On
+ * 2026-09-05 the map the console needed held 21 PRs, and "REST answered" without
+ * a count would have been true of an empty map too.
+ */
+export type FallbackInput = {
+  /** Why the usual read was refused, in a few words. */
+  because: string;
+  /** How many merged PRs the other road found. */
+  found: number;
+  /** It ran out of pages before it ran out of window. */
+  capped: boolean;
+};
+
+/** The finished line and the register to say it in. The page renders, it does
+ *  not decide. */
+export type FallbackBanner = { text: string; warn: boolean };
+
+export function fallbackBanner(read: FallbackInput | null): FallbackBanner | null {
+  if (!read) return null;
+  const found = `${read.found} merged PR${read.found === 1 ? '' : 's'}`;
+  const how = `The merged-PR list came from GitHub's REST API this poll — the usual GraphQL read was refused (${read.because}).`;
+  // The cap is the one thing this read can lose, so it is the one thing the
+  // line has to admit. It loses the OLD end of the window, and it says what the
+  // board did about it — otherwise the rows reading "cannot say where its PR
+  // stands" have no explanation anywhere on the page. No page count in the
+  // wording: the cap lives in gh.ts, and a number repeated across two files is a
+  // number that goes stale in one of them.
+  return read.capped
+    ? {
+        text:
+          `${how} It read ${found} and then stopped at its page limit, so a PR merged early in the window may be ` +
+          'missing — rows it could not account for say so rather than guess.',
+        warn: true,
+      }
+    : { text: `${how} It read ${found}, the whole window.`, warn: false };
+}

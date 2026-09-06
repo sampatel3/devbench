@@ -73,9 +73,51 @@ export function priorityOf(labels: string[]): Priority {
  * It is the empty priority axis, not the label: the label exists because the
  * axis is empty, and an issue that has been ranked has been triaged whatever
  * labels are still hanging off it.
+ *
+ * A QUESTION ABOUT LABELS ONLY. Whether the console should still be ASKING it is
+ * `needsTriage` below, which is the one every surface reads.
  */
 export function awaitingTriage(labels: string[]): boolean {
   return priorityOf(labels) === 'untriaged';
+}
+
+/**
+ * The issue is CLOSED on GitHub.
+ *
+ * Two ways to know, and both are needed. `status === 'done'` is the ordinary
+ * one, and it covers the row GitHub could not be read for as well — absence has
+ * overwhelmingly meant a close. `orphan.reason === 'closed'` is the one that
+ * catches the case the status cannot: `deriveStatus` returns the gate, the
+ * queue place or the failure BEFORE it ever reaches its closed branch, so a
+ * worker parked at gate C on a ticket QA closed yesterday reads `at-gate` — and
+ * #5697 was exactly that, closed and signed off with a worker still on it.
+ *
+ * `orphan` is optional on the wire, so an older server's rows fall back to the
+ * status alone rather than reading as open. Same rule `isParked` and `isUatFail`
+ * keep: a field that is not there decides nothing.
+ */
+export function isClosedIssue(row: Pick<Sortable, 'status' | 'orphan'>): boolean {
+  return row.status === 'done' || row.orphan?.reason === 'closed';
+}
+
+/**
+ * IS THERE STILL A TRIAGE QUESTION HERE? The predicate every triage surface
+ * reads — the priority pill, the caution above the start button, and the sink
+ * inside a band.
+ *
+ * A closed issue is excluded, whatever its labels say. 33 of 105 closed issues
+ * still carried `needs-triage` at the close, because nothing ever takes the
+ * label off — and the console cannot take it off either: it never writes labels
+ * to GitHub, by a fence that is not being loosened for a tidy-up. So it stops
+ * ASKING instead. Ranking work that is finished is not a question anybody can
+ * answer, and a pill reading "needs triage" over a signed-off ticket is the list
+ * lying about what is left to do.
+ *
+ * This is exclusion from the QUESTION, never from the record: the label itself
+ * still shows in the row's own label line, and the issue on GitHub is untouched.
+ */
+export function needsTriage(row: Pick<Sortable, 'labels' | 'status' | 'orphan'>): boolean {
+  return !isClosedIssue(row) && awaitingTriage(row.labels);
 }
 
 /** What the pill SAYS. The band is called `untriaged` in the code and reads
@@ -89,21 +131,21 @@ export function bandLabel(p: Priority): string {
 export const ORANGE: WorkerStatus[] = ['at-gate', 'awaiting-post', 'reply-received', 'rework'];
 
 /**
- * Nobody is working these any more, so they are on you again.
+ * Nobody is working these any more, so they are on the operator again.
  *
  * Separate from ORANGE on purpose: ORANGE is "the console is holding a question
  * for you", these are "the work stopped and nothing will move it on its own".
- * Both belong on the list of what needs you; only these mean something went
- * wrong. `blocked` is deliberately in neither — it is waiting on somebody who is
- * not you. If that ever changes it goes into ORANGE at this definition, never
- * into the card that reads it.
+ * Both belong on the list of what needs the operator; only these mean something
+ * went wrong. `blocked` is deliberately in neither — it is waiting on somebody
+ * other than the operator. If that ever changes it goes into ORANGE at this
+ * definition, never into the card that reads it.
  */
 export const STOPPED: WorkerStatus[] = ['checkpoint', 'failed', 'detached'];
 
 /**
  * SET ASIDE BY YOU. The operator asked to be able to pause a ticket: it can stay
- * at its gate, but it must not appear at the top of the queue and the page must
- * make the pause obvious.
+ * at its gate, but it must not appear at the top of the queue, and the row has to
+ * say plainly that it is paused.
  *
  * `!= null` rather than `!== null`, on the same rule as `isUatFail`: a rebuilt
  * `ui/dist` talking to a server that has not restarted sends rows with NO
@@ -118,17 +160,17 @@ export function isParked(row: { parked?: ParkedStamp | null }): boolean {
  * NOT COMPLETE, AND AWAITING — the one class the operator asked for, with two
  * members.
  *
- * The operator asked for blocked rows to wear the same UI as parked ones, so it
- * is visible which tickets are not complete and awaiting. Parked and blocked are
- * different CAUSES with the same consequence: nothing is going to happen on this
- * row, and it is not going to happen for a reason nobody is currently acting on.
- * You parked it, or a named person owes a reply that has not come. Either way it
- * should not be at the top of the list, and either way you need to be able to
- * find it.
+ * The same UI has to cover blocked, so it is clear which rows are not complete
+ * and awaiting. Parked and blocked are different CAUSES with the same
+ * consequence: nothing is going to happen on this row, and it is not going to
+ * happen for a reason nobody is currently acting on. The operator parked it, or a
+ * named person owes a reply that has not come. Either way it should not be at the
+ * top of the list, and either way it has to stay findable.
  *
  * What is deliberately NOT in here is the third state, and it is the one that
  * makes the class mean anything: `pr-open` — a pull request with a reviewer or a
- * codeowner team holding it — is PROGRESSING WITHOUT YOU. It is not stalled.
+ * codeowner team holding it — is PROGRESSING WITHOUT THE OPERATOR. It is not
+ * stalled.
  * `waiting.ts` already draws that line between `on` (other people) and `yours`,
  * and `blocker.ts` works out which named party actually holds the merge. This
  * predicate must never be widened to `isElsewhere`, which would swallow
@@ -160,15 +202,15 @@ export function isAside(row: Pick<Sortable, 'status' | 'parked'>): boolean {
  * drawn compact and faded (`.rail-item.finished`), with no header over them and
  * nothing to expand. Adding a titled section or a collapsible fold would put a
  * second navigation idiom into a list that has one, for a group that is usually
- * two or three rows long. And a fold HIDES: you have to be able to find a parked
- * ticket weeks later, and a state you cannot see is a state that rots. Sinking
- * keeps every parked row in the same scroll, in the same list, one flick away,
- * with its gate and its priority still printed on it.
+ * two or three rows long. And a fold HIDES: the operator has to be able to find a
+ * parked ticket weeks later, and a state you cannot see is a state that rots.
+ * Sinking keeps every parked row in the same scroll, in the same list, one flick
+ * away, with its gate and its priority still printed on it.
  *
  * Note this sits ABOVE the UAT send-back key, which is otherwise the one thing
  * that beats every band. That is deliberate: parking is the most recent explicit
- * statement you have made about the row, made with the send-back already on
- * screen. A parked ticket that still shouted from the top would be the feature
+ * statement the operator has made about the row, made with the send-back already
+ * on screen. A parked ticket that still shouted from the top would be the feature
  * failing on exactly the rows it is most needed for.
  */
 function sunk(row: Pick<Sortable, 'status' | 'parked'>): number {
@@ -219,7 +261,7 @@ export function needsYou(row: { status: WorkerStatus }): boolean {
  *  which is what lets the comparator be tested without a browser. */
 export type Sortable = Pick<
   IssueRow,
-  'labels' | 'status' | 'updatedAt' | 'selfFiled' | 'uatFail' | 'waiting' | 'parked'
+  'labels' | 'status' | 'updatedAt' | 'selfFiled' | 'uatFail' | 'waiting' | 'parked' | 'orphan'
 > & {
   /** 1-based place in the dispatch line, or null when it is not in it. The
    *  server computes it from `queue.list()` — see the key that reads it. */
@@ -229,21 +271,22 @@ export type Sortable = Pick<
 /**
  * Whose hands the row is in. Three tiers, and the middle one was a correction.
  *
- * The operator asked, first, for issues that are not with them to sink towards
- * the bottom of the list and to move back up when they return. That gave one
- * question — **if you go away for a week, does this row move on its own?** — and
+ * The operator asked, first, that issues NOT with them sink towards the bottom of
+ * the list and move back up when they are back on them. That gave one question —
+ * **if the operator goes away for a week, does this row move on its own?** — and
  * a binary answer.
  *
- * On seeing it, the operator corrected it: work being actively worked on should
- * be prioritised UP the queue, because actively worked on means it is with them.
- * They were right, and the binary was the bug: it put a worker running on YOUR
- * machine, on YOUR issue, likely to come back to you within the hour, in the same
+ * Then, on seeing it: work being ACTIVELY worked on should be prioritised UP the
+ * queue, because actively worked on means it is with them. That is right, and the
+ * binary was the bug: it put a worker running on the operator's OWN machine, on
+ * the operator's OWN issue, likely to come back within the hour, in the same
  * bucket as a PR that has sat with the codeowner team for days. Both answer "yes,
  * it moves" — which is where the first question stops being useful.
  *
- * The second question is WHOSE machine. And a third, once the active issue turned
- * out to sit below tickets with no worker at all, separates work you have never
- * touched from work that is standing still waiting for you:
+ * The second question is WHOSE machine. And a third, after the operator saw the
+ * result — an active issue drawn far down the list, below even the tickets with
+ * no workers on them — separates work nobody has touched from work that is
+ * standing still waiting for an answer:
  *
  *   yours      nothing happens until you act    gates, stopped, failed,
  *                                               detached, paused
@@ -252,11 +295,11 @@ export type Sortable = Pick<
  *   elsewhere  other people, other queues       queued, blocked, pr-open,
  *                                               pr-merged
  *
- * `no-worker` was in `yours` because only you can start one. True, and the wrong
- * conclusion: an issue nobody has opened is AVAILABLE, not asking. Nothing is
- * standing still waiting on an answer, and it has no more claim on the top of
- * the list than the backlog it came from. It stays above `elsewhere` because
- * picking it up is still your move and nobody else's.
+ * `no-worker` was in `yours` because only the operator can start one. True, and
+ * the wrong conclusion: an issue nobody has opened is AVAILABLE, not asking.
+ * Nothing is standing still waiting on an answer, and it has no more claim on the
+ * top of the list than the backlog it came from. It stays above `elsewhere`
+ * because picking it up is still the operator's move and nobody else's.
  *
  * `queued` stays in `elsewhere` on purpose: the ask was about work being ACTIVELY
  * worked on, and a queued issue is waiting for a slot, not being worked. It lifts
@@ -274,16 +317,16 @@ export type Sortable = Pick<
  * `pr-merged` SINKS, and it is the one worth explaining, because the obvious
  * reading is wrong. Stage 9 exists and its step 3 says to hand QA a ready
  * verification script on the issue — which makes a merged PR look like it is
- * waiting on you to post something. It is not: the operator is not responsible
- * for telling QA to pick merged work up, and the repo's own history agreed six
- * times out of six. Six merged issues were found, tested and closed by QA
- * (qa-alice, qa-bob) with NO handover comment from anyone, on a strikingly
+ * waiting on the operator to post something. It is not: telling QA to pick merged
+ * work up is not the operator's job, and the record agrees six times out of six.
+ * #4334, #4336, #4342, #4487, #4491 and #4546 were all found, tested and closed
+ * by QA (qa-alice, qa-bob) with NO handover comment from anyone, on a strikingly
  * regular 17.7–22.5 hour cycle from merge. The handover comment has never once
  * been posted in this repo. A merged PR moves on its own.
  *
  * The one thing that genuinely does not move on its own after a merge is the
  * 1.2 GB of `node_modules` Stage 9 clears — housekeeping, not a decision, and
- * not a reason to hold a row at the top of your list. And if QA sends the work
+ * not a reason to hold a row at the top of the list. And if QA sends the work
  * back, that arrives as `uatFail`, which already outranks everything including
  * P0 two keys above this one.
  *
@@ -293,7 +336,7 @@ export type Sortable = Pick<
 export type Court = 'yours' | 'live' | 'unstarted' | 'elsewhere';
 
 /**
- * Which tier each of the 16 statuses is in. Exhaustive by type, so adding a
+ * Which tier each of the 17 statuses is in. Exhaustive by type, so adding a
  * status to `WorkerStatus` without deciding its tier breaks the build, on
  * purpose — `ORANGE` and `STOPPED` are open partial lists with no such guard,
  * which is exactly how `paused` came to be in neither of them.
@@ -311,7 +354,7 @@ const COURT: Record<WorkerStatus, Court> = {
   // with no handover comment ever posted in this repo.
   'pr-merged': 'elsewhere',
 
-  // Nothing happens until you act.
+  // Nothing happens until the operator acts.
   'at-gate': 'yours',
   'awaiting-post': 'yours',
   'reply-received': 'yours',
@@ -323,9 +366,22 @@ const COURT: Record<WorkerStatus, Court> = {
   // "Always a click — the automation never resumes anything".
   paused: 'yours',
 
-  // Available to pick up. Only you can start one, but nothing is waiting on an
-  // answer, so it does not belong among the rows that are.
+  // Available to pick up. Only the operator can start one, but nothing is waiting
+  // on an answer, so it does not belong among the rows that are.
   'no-worker': 'unstarted',
+
+  // THE CONSOLE COULD NOT READ IT, and the tier is decided by this file's own
+  // test — if the operator goes away for a week, does this row move on its own?
+  // Yes: the next successful poll replaces it with whatever the row actually is,
+  // and nothing here is holding a question for them. That rules `yours` out even
+  // though `yours` is the default, and it is the only tier that would repeat the
+  // incident — 21 rows shouting from the top of the list with nothing to do
+  // about any of them. The degraded poll says so ONCE, in the banner.
+  //
+  // Not `unstarted` either: "available to pick up" is an invitation to start a
+  // worker on an issue whose PR may already have merged, which is the one costly
+  // thing a row in this state could get somebody to do.
+  unreadable: 'elsewhere',
 
   // Finished, and sunk by its own rule one key earlier. Never reached here.
   done: 'yours',
@@ -346,13 +402,13 @@ const COURT_RANK: Record<Court, number> = { yours: 0, live: 1, unstarted: 2, els
  *
  * An ABSENT `waiting` is not an exemption. An older console, or a rebuilt
  * `ui/dist` talking to a server that has not restarted, sends no `waiting` at
- * all; treating that as "you have items" would pull every open PR in the repo
+ * all; treating that as "there are items" would pull every open PR in the repo
  * back up at once — the same trap the `!= null` guard on `uatFail` avoids.
  *
  * A LIVE row is never promoted this way. A running worker holds no question for
- * you — `waiting()` suppresses its card for that very reason — so there is
- * nothing there to rescue, and reading a stale `waiting` on a row a worker has
- * since picked up would put it back in your group while it is mid-flight.
+ * the operator — `waiting()` suppresses its card for that very reason — so there
+ * is nothing there to rescue, and reading a stale `waiting` on a row a worker has
+ * since picked up would put it back in their group while it is mid-flight.
  */
 export function courtOf(row: Pick<Sortable, 'status' | 'waiting'>): Court {
   const court = COURT[row.status];
@@ -361,7 +417,7 @@ export function courtOf(row: Pick<Sortable, 'status' | 'waiting'>): Court {
 }
 
 /** Kept as its own name because it reads better at the call sites that only care
- *  whether the row has left you: `elsewhere` is the only tier that has. */
+ *  whether the row has left the operator: `elsewhere` is the only tier that has. */
 export function isElsewhere(row: Pick<Sortable, 'status' | 'waiting'>): boolean {
   return courtOf(row) === 'elsewhere';
 }
@@ -398,9 +454,13 @@ export function isUatFail(row: Pick<Sortable, 'uatFail'>): boolean {
  * Raised from this machine AND still unranked — the one combination that means
  * nobody but this laptop has said this is worth doing. It is the caution shown
  * on the start card, and the only thing the ordering does with either fact.
+ *
+ * Through `needsTriage`, so a closed issue is out of it: the caution sits above
+ * a button that would start work, and there is no work to start on a ticket QA
+ * has signed off.
  */
-export function selfFiledNeedsTriage(row: Pick<Sortable, 'labels' | 'selfFiled'>): boolean {
-  return row.selfFiled && awaitingTriage(row.labels);
+export function selfFiledNeedsTriage(row: Pick<Sortable, 'labels' | 'selfFiled' | 'status' | 'orphan'>): boolean {
+  return row.selfFiled && needsTriage(row);
 }
 
 /** An unreadable timestamp sorts last within its band rather than throwing the
@@ -442,10 +502,10 @@ export function compareIssues(a: Sortable, b: Sortable): number {
   // two because their relative order is the point: a closed issue must stay
   // below a parked one, and two independent boolean keys cannot express that.
   //
-  // A parked ticket must not appear at the top of the queue. Everything below
-  // this line still applies INSIDE each of the three groups, so a parked P0 is
-  // still above a parked P3 and a parked send-back is still first among parked
-  // rows — the group is ordered, it has simply left the top.
+  // The operator's rule: a set-aside row must not appear at the top of the queue.
+  // Everything below this line still applies INSIDE each of the three groups, so
+  // a parked P0 is still above a parked P3 and a parked send-back is still first
+  // among parked rows — the group is ordered, it has simply left the top.
   const sinks = sunk(a) - sunk(b);
   if (sinks !== 0) return sinks;
 
@@ -463,13 +523,14 @@ export function compareIssues(a: Sortable, b: Sortable): number {
   // The `done` sink used to be here, as its own key. It has moved to the top of
   // this function and joined the parked/blocked sink in `sunk()`, because the
   // two have to be ranked against each other and two booleans cannot do that.
-  // Its rule is unchanged: closed is the floor — the operator asked for closed
-  // issues to be greyed and at the bottom of the list.
+  // Its rule is unchanged: closed is the floor — closed issues are greyed and at
+  // the bottom of the list.
 
   // Whose hands it is in: yours, then your worker's, then other people's. The
-  // operator asked for issues that are not with them to sink and to move back up
-  // when they return, then corrected it on seeing the result: work being actively
-  // worked on is with them, so it belongs UP the queue.
+  // operator asked that issues NOT with them sink towards the bottom of the list
+  // and move back up when they are back on them — then, on seeing it, that work
+  // being ACTIVELY worked on be prioritised UP the queue, because actively worked
+  // on means it is with them.
   //
   // Deliberately a SINK beside the `done` sink, and NOT a promotion above the
   // band — the difference is load-bearing. Promoting "on me" above the band
@@ -491,10 +552,11 @@ export function compareIssues(a: Sortable, b: Sortable): number {
    * (`queue.list()`, via the server's `queuePosition`).
    *
    * Without it the rail contradicted the line on exactly the rows where the line
-   * is the authority. A P2 you had sent back is served before an untouched P1
-   * (`queue.ts`, key 2) and the rail drew the P1 first; two queued P1s are served
-   * FIFO by arrival and the rail drew them newest-first, which is close to the
-   * reverse. Both rows printed the position that contradicted their own order.
+   * is the authority. A P2 the operator had sent back is served before an
+   * untouched P1 (`queue.ts`, key 2) and the rail drew the P1 first; two queued
+   * P1s are served FIFO by arrival and the rail drew them newest-first, which is
+   * close to the reverse. Both rows printed the position that contradicted their
+   * own order.
    *
    * A row NOT in the line has no position and no opinion here, so nothing else
    * moves: an unstarted P0 is still above a queued icebox ticket, because the

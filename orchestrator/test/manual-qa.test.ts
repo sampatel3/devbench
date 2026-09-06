@@ -2,12 +2,12 @@
  * The click-script the console RENDERS AS LINKS — which is the whole reason this
  * needs a fence.
  *
- * The complaint was that the click-script was referenced and unreachable, so the
- * fix is real anchors the operator can click. That turns a field a worker writes
- * into a link a person is told to follow, and a worker reads issue text, PR
- * comments and web pages. A `https://evil.example/login` in `appUrl` under the
- * heading "sign in here" is a phishing link the console itself asked the
- * operator to click.
+ * The operator's complaint was that the click-script was referenced and
+ * unreachable, so the fix is real anchors they can click. That turns a field a
+ * worker writes into a link a person is told to follow, and a worker reads issue
+ * text, PR comments and web pages. A `https://evil.example/login` in `appUrl`
+ * under the heading "sign in here" is a phishing link the console itself asked
+ * them to click.
  *
  * So: the app under QA is the LOCAL dev server or it is not a link at all. The
  * text is always kept — an unlinkable url is shown as plain text, never dropped
@@ -34,6 +34,9 @@ const WELL_FORMED = {
       rev: 1,
       do: 'Click Organisations in the left nav',
       url: 'http://localhost:8106/organisations',
+      // v3. `url` is the thing the operator clicks; `route` is the path the console
+      // drives to when it takes the screenshots itself.
+      route: '/organisations',
       before: 'the filter pills were shown to every admin',
       beforeShot: `${QA}/s1-before.png`,
       after: 'the pills are there only as system_admin',
@@ -54,6 +57,7 @@ describe('parseManualQa', () => {
       rev: 1,
       do: 'Click Organisations in the left nav',
       url: 'http://localhost:8106/organisations',
+      route: '/organisations',
       before: 'the filter pills were shown to every admin',
       beforeShot: `${QA}/s1-before.png`,
       after: 'the pills are there only as system_admin',
@@ -84,6 +88,27 @@ describe('parseManualQa', () => {
     })!;
     expect(qa.steps[0]!.url).toBeNull();
     expect(qa.steps[0]!.do).toBe('Click the thing'); // the instruction is still readable
+  });
+
+  /**
+   * `route` is what the CONSOLE drives a browser to, so an unsafe one is worse
+   * than an unsafe `url`: nobody has to click it. The step survives with a null
+   * route, which means "not drivable" and puts it back under exactly the rules
+   * it had before routes existed. The fence itself is `qaRoute`, exercised in
+   * full by capture.test.ts; this is the wiring.
+   */
+  it('REFUSES a route that is not a path on this machine, and keeps the step', () => {
+    const qa = parseManualQa({
+      steps: [
+        { do: 'Open the list', route: 'http://evil.example/steal', after: 'it is there' },
+        { do: 'Open the other list', route: '//evil.example/steal', after: 'it is there' },
+        { do: 'Open a third', route: '/quotes/1234', after: 'it is there' },
+      ],
+    })!;
+    expect(qa.steps[0]!.route).toBeNull();
+    expect(qa.steps[1]!.route).toBeNull();
+    expect(qa.steps[2]!.route).toBe('/quotes/1234');
+    expect(qa.steps[0]!.do).toBe('Open the list'); // the instruction stands
   });
 
   it('REFUSES a look-alike host that only starts with localhost', () => {
@@ -139,7 +164,7 @@ describe('parseManualQa', () => {
       ],
     })!;
     expect(Object.keys(qa.steps[0]!).sort()).toEqual(
-      ['after', 'afterShot', 'before', 'beforeShot', 'do', 'fix', 'id', 'rev', 'shotStamp', 'url'].sort(),
+      ['after', 'afterShot', 'before', 'beforeShot', 'do', 'fix', 'id', 'rev', 'route', 'shotStamp', 'url'].sort(),
     );
     expect(qa.steps[0]!.shotStamp).toBeNull();
     expect(JSON.stringify(qa)).not.toContain('verified');
@@ -182,10 +207,11 @@ describe('parseManualQa', () => {
    *
    * The ids are what the operator's ticks hang on. A worker's merge that
    * copy-pastes step 1 twice used to cascade — the dup took 2, which pushed the
-   * real step 2 to 3 and the real step 3 to 4 — so every step after the
-   * duplicate came back holding another step's tick, resolved to unset, and the
-   * operator redid QA already done, with no message of any kind. Ids are
-   * claimed first, gaps are filled after, so the blast radius of a copy-paste is the copy-paste.
+   * real step 2 to 3 and the real step 3 to 4 — so every step after the duplicate
+   * came back holding another step's tick, resolved to unset, and the operator
+   * redid QA they had already done with no message of any kind. Ids are claimed
+   * first, gaps are filled after, so the blast radius of a copy-paste is the
+   * copy-paste.
    */
   it('does not renumber the steps AFTER a duplicated id', () => {
     const qa = parseManualQa({
@@ -206,9 +232,9 @@ describe('parseManualQa', () => {
   });
 
   /**
-   * A step the parser could not use is a step nobody will ever tick — so the count
-   * has to leave the parser with the script. Silently rendering four of five
-   * steps is a QA half that passes on 4/5 of itself.
+   * A step the parser could not use is a step the operator will never tick — so
+   * the count has to leave the parser with the script. Silently rendering four
+   * of five steps is a QA half that passes on 4/5 of itself.
    */
   it('counts the steps it had to drop, so a short script is never silent', () => {
     const qa = parseManualQa({
@@ -245,6 +271,7 @@ describe('parseManualQa', () => {
       rev: 1,
       do: 'Log in',
       url: null,
+      route: null,
       before: null,
       beforeShot: null,
       after: null,
@@ -265,8 +292,9 @@ describe('parseManualQa', () => {
 });
 
 /**
- * On #4546's gate C the card said both "The click-script has no steps" and
- * "6 steps came back malformed", which cannot both be the useful thing to know.
+ * At one gate C the card said both "The click-script has no steps" and "6 steps
+ * came back malformed", which cannot both be the useful thing to know, and the
+ * operator asked what had happened.
  *
  * The worker had written six perfectly good steps and keyed the instruction
  * `action` instead of `do`. Every other field it wrote parsed. So six real
@@ -278,7 +306,8 @@ describe('parseManualQa', () => {
  * extends to v1's `expected` (read as `after`): a step whose only defect is
  * which word names the instruction is not malformed, it is the same step. It
  * stays safe under this file's governing rule — only instruction-shaped fields
- * are read, never anything verdict-shaped, because the tick is the operator's alone.
+ * are read, never anything verdict-shaped, because the tick is the operator's
+ * alone.
  */
 describe('an instruction under a synonym is still an instruction', () => {
   it('reads `action` as `do`, the way it already reads `expected` as `after`', () => {

@@ -112,9 +112,9 @@ describe('the local machine read', () => {
     const readAt = o.state().lastPolledAt;
 
     // The machine got tight between GitHub polls. At fifteen minutes, a console
-    // that only learned this from the poll would tell the operator there was headroom for
-    // a quarter of an hour after there was not — which is the exact failure the
-    // whole memory guard exists for.
+    // that only learned this from the poll would tell the operator there was
+    // headroom for a quarter of an hour after there was not — which is the exact
+    // failure the whole memory guard exists for.
     freePct = 12;
     await o.resourceTick();
 
@@ -191,6 +191,41 @@ describe('a partly-failed poll does not claim to be a read', () => {
     await o.stop();
   });
 
+  /**
+   * FIX — only `failed[0]` reached the banner.
+   *
+   * Three reads can fail in one `Promise.all` and the operator was told about
+   * one of them. On 2026-09-05 that cost an hour: the banner named a read that
+   * was incidental and said nothing about the merged-PR query that was actually
+   * being rejected — the one every broken row hung off. Which reads are down IS
+   * the diagnosis.
+   */
+  it('names EVERY failed read, not just the first one to land', async () => {
+    vi.mocked(gh.listIssues).mockRejectedValue(new Error('HTTP 502: Bad gateway'));
+    vi.mocked(gh.listOpenPrs).mockRejectedValue(new Error('HTTP 502: Bad gateway'));
+    vi.mocked(gh.listRecentMergedPrs).mockRejectedValue(new Error('API rate limit already exceeded'));
+    const o = orch();
+    await o.poll();
+
+    const banner = o.state().pollError!;
+    expect(banner).toContain('3 GitHub reads failed this poll');
+    expect(banner).toContain('gh issue list failed');
+    expect(banner).toContain('gh pr list (open) failed');
+    expect(banner).toContain('gh pr list (merged) failed');
+    expect(banner).toContain('rate limit already exceeded');
+    // Still ONE finished line: the page renders it, it composes nothing.
+    expect(banner.split('\n')).toHaveLength(1);
+    await o.stop();
+  });
+
+  it('keeps the single failure reading exactly as it did — no count, no preamble', async () => {
+    vi.mocked(gh.listRecentMergedPrs).mockRejectedValue(new Error('API rate limit already exceeded'));
+    const o = orch();
+    await o.poll();
+    expect(o.state().pollError).toBe('gh pr list (merged) failed: API rate limit already exceeded');
+    await o.stop();
+  });
+
   it('clears the error and moves the stamp again once GitHub answers', async () => {
     vi.mocked(gh.listOpenPrs).mockRejectedValueOnce(new Error('boom'));
     const o = orch();
@@ -209,9 +244,9 @@ describe('a partly-failed poll does not claim to be a read', () => {
  *
  * `poll()` returns silently on re-entry, and the route replied "read GitHub just
  * now" regardless. The dropped poll is the `manual: true` one — the only path
- * that outranks the quota brake — and the operator presses Refresh precisely when the
- * feed looks stale, which is exactly when a slow poll is most likely to be in
- * flight.
+ * that outranks the quota brake — and the operator presses Refresh precisely
+ * when the feed looks stale, which is exactly when a slow poll is most likely to
+ * be in flight.
  */
 describe('a poll says whether it actually ran', () => {
   it('reports true when it read, and false when it was dropped for one already running', async () => {

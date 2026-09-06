@@ -1106,6 +1106,16 @@ header .meta { color: var(--muted); font-size: 12.5px; }
 }
 .qa2-rework-head { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
 .qa2-rework .note { margin: 8px 0 0; }
+/* The console's own screenshot run. Quiet by default — it ran on its own and
+   the usual news is that it worked — and it borrows `note err` for a run that
+   could not take a picture, which is the same red every other missing artifact
+   on this card wears. */
+.qa2-capture { margin: 10px 0 4px; padding-top: 8px; border-top: 1px solid var(--line); }
+.qa2-capture .note { margin: 0 0 8px; }
+.qa2-capture .note:last-child { margin: 8px 0 0; }
+.qa2-capture-at { color: var(--muted); }
+.qa2-capture-notes { margin: 0 0 8px; padding-left: 20px; }
+.qa2-capture-notes .note { margin: 0 0 2px; }
 .qa2-edge { margin: 10px 0 0; font-size: 12.5px; color: var(--muted); }
 .qa2-edge > summary { cursor: pointer; }
 .qa2-edge ul { margin: 4px 0 0; padding-left: 20px; }
@@ -1810,7 +1820,7 @@ pre.sent { white-space: pre-wrap; margin: 4px 0 0; font: inherit; }
 .pending-list li { color: var(--ink); font-size: 13.5px; margin: 0 0 6px; line-height: 1.45; }
 .pending-list li:last-child { margin-bottom: 0; }
 .pending-list a { color: var(--ink); }
-/* His own words, quoted back — supporting, never competing with the item. */
+/* Your own words, quoted back — supporting, never competing with the item. */
 .pending-detail { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 .pending-clear { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
 

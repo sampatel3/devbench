@@ -1,5 +1,6 @@
 import type { GateFile, PausedStamp, PullRequest, WorkerStatus } from './types.js';
 import { issueFromBranch } from './naming.js';
+import { closedDetail, type CloseVerdict } from './close-verdict.js';
 
 export type StatusInput = {
   hasWorktree: boolean;
@@ -37,6 +38,16 @@ export type StatusInput = {
    *  this the row read "stage 9 post-merge" on #4336 six hours after QA posted
    *  a full pass and closed it. */
   issueClosed?: boolean;
+  /**
+   * What QA had said when the close was first seen — the console's own record,
+   * not a fresh reading of the comments. See `close-verdict.ts`.
+   *
+   * Absent or null means the console never established it, and then the closed
+   * row says what it has always said. `none` is a different thing: it means the
+   * console looked and there was no verdict, which is the finding 28 of 105
+   * closures turned out to be.
+   */
+  closeVerdict?: CloseVerdict | null;
   /** Set while a worktree is being created and scaffolded. */
   provision?: { phase: 'creating' | 'preparing' | 'ready' | 'failed'; error: string | null } | null;
   /** A worker's drafted comment, waiting for you to post it. */
@@ -95,6 +106,33 @@ export type StatusInput = {
   /** What the person who applied the `blocked` label said about it. Outranks the
    *  worker's own summary — see `blockedReason`. */
   blockedNote?: { by: string; body: string } | null;
+  /**
+   * THE PR LISTS WERE NOT READ IN FULL, AND THERE IS NOTHING TO FALL BACK ON.
+   *
+   * `pr: null` used to mean one thing — this issue has no pull request — and it
+   * quietly meant two. On 2026-09-05 the console was restarted, GitHub rejected
+   * the merged-PR query ("API rate limit already exceeded") while every
+   * documented counter read 5000/5000, and `poll()` fell back to the previous
+   * merged map exactly as designed. After a restart the previous map is EMPTY.
+   * So 21 rows whose PRs had merged and were sitting in QA lost their PR, fell
+   * through to the checkpoint line, and read "stopped after stage 8 — the worker
+   * ended its turn without stopping at a gate". The operator opened the console
+   * to 21 finished issues reported as stalled. Nothing was wrong with any of the
+   * work.
+   *
+   * True when the read failed AND the console holds no map for that list. A
+   * failed read over a map we already have is the case the fallback was written
+   * for, and it stays silent, because the previous answer is still the best
+   * answer.
+   *
+   * ALSO TRUE when a read came back SHORT, with no second half to it. The REST
+   * fallback pages against a cap, and a capped map is this poll's own answer,
+   * missing an unknown tail: no size and no previous map tells you whether the
+   * branch this row is asking about is one of the ones it never reached. Failing
+   * to read a list and reading part of one land in the same place here, which is
+   * why the sentence below says "in full" rather than "at all".
+   */
+  prsUnreadable?: boolean;
 };
 
 /**
@@ -170,7 +208,10 @@ export function pausedDetail(p: PausedStamp): string {
  *
  *  - a gate outranks a PR, because a gate is a person waiting;
  *  - detached outranks queued, because we must not start a second owner;
- *  - a failed run outranks an open PR, because a failure is news.
+ *  - a failed run outranks an open PR, because a failure is news;
+ *  - and a read the console could not make outranks NOTHING. It is the last
+ *    branch on the worktree path, because every branch above it is a fact and a
+ *    fact beats an admission of ignorance. See `prsUnreadable`.
  */
 /** "6 min ago" / "8 h ago" / "3 d ago" — the vocabulary the account cards use. */
 function ago(iso: string, now: number): string | null {
@@ -352,16 +393,21 @@ export function deriveStatus(i: StatusInput, now: number = Date.now()): { status
     // Reached only by a row we READ as closed now, or by one GitHub could not be
     // read for at all. It used to be reached by an issue's mere absence from the
     // open list, which also catches a reassignment and a paging drop — both of
-    // which then read "QA signed it off". The wording here is unchanged, because
-    // absence has overwhelmingly always meant a close and this sentence is the
-    // useful summary of it; what changed is which rows arrive at it. A row that
-    // could not be read says so on its own card. See `OrphanCard`.
+    // which then read "QA signed it off"; what changed is which rows arrive at
+    // it. A row that could not be read says so on its own card. See
+    // `OrphanCard`.
+    //
+    // `sentBack` first, because it is the live feed's own words and it names the
+    // person. `closedDetail` is the record — what QA had said at the close — and
+    // it is what stops "QA signed it off" being an inference from the close
+    // itself. With no record it says what it always said, which is the only
+    // remaining inference and is now only reached when the console never looked.
     if (i.sentBack) {
       return { status: 'done', statusDetail: sentBackDetail(i.sentBack, 'closed on GitHub') };
     }
     return {
       status: 'done',
-      statusDetail: i.pr ? `closed — PR #${i.pr.number} merged and QA signed it off` : 'closed on GitHub',
+      statusDetail: closedDetail(i.closeVerdict ?? null, i.pr?.number ?? null),
     };
   }
   if (i.pr && i.pr.state === 'MERGED') {
@@ -378,6 +424,55 @@ export function deriveStatus(i: StatusInput, now: number = Date.now()): { status
   }
   if (i.pr) return { status: 'pr-open', statusDetail: `PR #${i.pr.number}${i.pr.isDraft ? ' (draft)' : ''} open` };
   if (i.hasWorktree) {
+    // "NO PR" AND "WE COULD NOT LOOK" ARE NOT THE SAME SENTENCE.
+    //
+    // Everything above this line is something the console READ: a gate file on
+    // disk, a live process in the runner's map, a recorded failure, a place in
+    // its own queue. Every one of them still outranks this, because every one of
+    // them is a fact, and a fact beats an admission of ignorance. This is the
+    // last branch that would otherwise assert something about the PR, and it is
+    // the only place the ignorance can be told honestly.
+    //
+    // WHY A SEVENTEENTH STATUS, when reuse is the rule. Each of the three
+    // candidates is an assertion about the WORK, and all three are assertions we
+    // have just established we cannot make:
+    //
+    //  - `checkpoint` says the run stopped and nothing moves until you restart
+    //    it. It is the sentence the incident printed 21 times, and it is not
+    //    only wrong on the card: `audit.ts` raises "the worker stopped without
+    //    reaching a gate" against it, and the ticket pane puts a Start again
+    //    button on it. Offering to restart a worker on work that has already
+    //    merged is the one genuinely costly thing this row could do.
+    //  - `no-worker` says the issue is available to pick up. There is a worktree
+    //    on disk, `summary.ts` files every `no-worker` row under "not started",
+    //    and the Slack summary would have reported 21 finished issues as never
+    //    begun.
+    //  - `detached` says you took it over in a terminal. Simply untrue.
+    //
+    // `unreadable` asserts nothing about the work at all, which is the whole
+    // point, and it is transient: the next successful poll replaces it. It sits
+    // in the UI's `elsewhere` tier and wears the ice chip — "a worktree exists
+    // and nothing is running in it", the one thing here that WAS read, off disk
+    // — so a degraded poll says so once in the banner instead of 21 times at the
+    // top of the list. See `ui/src/priority.ts` and `ui/src/look.ts`.
+    //
+    // The stage is named as the worktree's own because that is exactly what it
+    // is: `effectiveStage` can only move it forward on PR evidence, and there is
+    // none to move it with.
+    if (i.prsUnreadable) {
+      const disk =
+        i.stage === null
+          ? 'and the worktree on disk records no stage either'
+          : "and the stage below is the worktree's own, read off disk";
+      return {
+        status: 'unreadable',
+        // "in full", because this branch now covers two polls: one where the PR
+        // lists could not be read at all, and one where a capped REST fallback
+        // read part of one. Neither can place this row's PR, and a sentence that
+        // said "could not be read" would be false on the second.
+        statusDetail: `GitHub's PR lists were not read in full this poll, so this row cannot say where its PR stands — ${disk}.`,
+      };
+    }
     const where = i.stage === null ? 'stopped part-way' : `stopped after stage ${i.stage}`;
     // A run that ended unattended looks exactly like one that never started, and
     // that silence is what made a restart feel like it had eaten the work.

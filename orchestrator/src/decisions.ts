@@ -70,6 +70,77 @@ export type GateDecision = {
   by?: 'supercharge';
 };
 
+/**
+ * WHAT THE BOX WAS ACTUALLY USED FOR — read from the bytes, not taken on trust.
+ *
+ * `POST /api/issues/:n/resume` carries an optional `decision`, and an absent one
+ * defaults to `approved` because that is what the first caller meant. Every
+ * caller written since inherits that default whether or not it is approving
+ * anything: the console's four "your gate C deliverable is incomplete" prompts
+ * go down the same pipe with no `decision` at all, so 110 send-backs are sitting
+ * in the ledger as approvals of the gate they were sent back from. `gatesApproved`
+ * then ticks a gate that is still open, `codeSince` resets its clock at the
+ * moment the code is about to change, and `leftUnanswered` reads the send-back's
+ * own empty list as the newest approval.
+ *
+ * The page cannot be the authority on this — a fresh bundle talks to an old
+ * server and an old bundle talks to this one — so the console classifies the
+ * message itself, the same way `approveGateC` recomputes the gate C lock from
+ * disk rather than rendering the page's copy of it.
+ *
+ * Both functions below only ever DEMOTE. An approval wrongly read as a send-back
+ * stalls work that was passed; a send-back wrongly read as an approval ticks a
+ * gate nobody passed and cannot be seen afterwards. So each one keys on bytes
+ * the console itself composed, never on a guess about English.
+ */
+
+/**
+ * The console's own send-backs, which say so in their first line.
+ *
+ * `askForShotsPrompt`, `askForMissingShotsPrompt`, `askForScriptPrompt` and
+ * `askForQuizPrompt` (`ui/src/gate.ts`) and `decideSupercharge`'s evidence
+ * send-back (`supercharge.ts`) all open by telling the worker, in capitals, that
+ * the message is not an approval. That sentence is written for the worker, but
+ * it is just as true of the ledger, and it is the one part of these prompts that
+ * is fixed: they are composed strings, not typed ones.
+ *
+ * Cased on purpose. `NOT` in capitals is the console's own convention for the
+ * line and no one types it by accident; matching case-insensitively would start
+ * reading the operator's prose, which is exactly the guess this must not make.
+ *
+ * The prompts are the page's and the classifier is the server's, and the two
+ * halves of this console share no code — so `decision-intent.test.ts` runs this
+ * over every one of them and fails the build when they drift, on the same rule
+ * `gate-c-evidence-reminder.test.ts` applies to the two copies of the reminder.
+ */
+const CONSOLE_SEND_BACK = 'NOT an approval';
+
+export function sentBackByTheConsole(message: string): boolean {
+  return message.includes(CONSOLE_SEND_BACK);
+}
+
+/**
+ * THE OPERATOR'S OWN WORDS, with the canned line the page wraps them in taken
+ * back off.
+ *
+ * `approvePrompt` (`ui/src/gate.ts`) sends `Gate D approved, proceed.` followed
+ * by whatever is in the textarea, and that composition is why the #5402 guard
+ * has never once fired: `readsAsQuestion` was handed the whole composed message,
+ * found `approved` and `proceed` in the line the PAGE wrote, and passed the two
+ * questions underneath it straight through as an approval of gate D. The
+ * heuristic was right and was reading the wrong bytes.
+ *
+ * Only the exact canned line is removed, and only from the front. Gate C's
+ * approval is a different string (`approvalLineC`) carrying the quiz record —
+ * question marks and all — and is deliberately left whole: it is machine-written
+ * and its own words say yes.
+ */
+export function saidInTheApproveBox(gate: GateLetter, message: string): string {
+  const canned = `Gate ${gate} approved, proceed.`;
+  const said = message.trimStart();
+  return said.startsWith(canned) ? said.slice(canned.length).trim() : message;
+}
+
 /** One JSON object per line, appended, never rewritten. */
 export async function appendDecision(path: string, d: GateDecision): Promise<void> {
   await appendFile(path, `${JSON.stringify(d)}\n`, 'utf8');
@@ -160,6 +231,14 @@ export function approvedThrough(decisions: GateDecision[], issue: number, gate: 
  * is a prose line workers only ever append below, so its header goes stale by
  * design — it said "A, B, C" on #4344 while the history two clicks away held the
  * Gate D approval twice. One screen, two answers, and the wrong one had the ticks.
+ *
+ * A HISTORY ROUND CANNOT SAY WHICH WAY IT WENT. Its `decision` is the operator's
+ * own words, and "step 3 is still wrong, redo it" is the same shape as "proceed" — so a
+ * round that was sent BACK has always ticked the gate here, the moment the round
+ * was recorded. The ledger is the half that knows, and the two records share a
+ * join: the console writes the identical bytes into both, `message` here and
+ * `decision` there. So a history round whose words this console recorded as a
+ * send-back is skipped, and every other round counts exactly as it always has.
  */
 export function gatesPassedFor(
   decisions: GateDecision[],
@@ -167,9 +246,14 @@ export function gatesPassedFor(
   history: Array<{ gate: GateLetter; decision: string | null }>,
 ): GateLetter[] {
   const seen = new Set<GateLetter>(gatesApproved(decisions, issue));
+  const sentBack = new Set(
+    decisions.filter((d) => d.issue === issue && d.decision === 'feedback').map((d) => `${d.gate}|${d.message}`),
+  );
   for (const h of history) {
     // A history round with no decision is a gate that was SHOWN, not one that passed.
-    if (h.decision !== null && h.decision !== '') seen.add(h.gate);
+    if (h.decision === null || h.decision === '') continue;
+    if (sentBack.has(`${h.gate}|${h.decision}`)) continue;
+    seen.add(h.gate);
   }
   return ORDER.filter((g) => seen.has(g));
 }

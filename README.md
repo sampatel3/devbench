@@ -38,8 +38,8 @@ there is not going to be — see [SECURITY.md](SECURITY.md).
 ### 1. Install
 
 ```bash
-git clone <your-fork> gatehouse
-cd gatehouse
+git clone <your-fork> devbench
+cd devbench
 npm ci
 ```
 
@@ -109,6 +109,32 @@ under **Run on**, press **Create a worktree…**, and confirm the commands it sh
 you. Then press **Start a worker**. It runs the preflight and stops at gate A
 with a scope for you to read. Nothing is built until you answer.
 
+### 7. Optional: let the console take the screenshots
+
+Gate C asks you to check the change by hand, and the evidence for it — a before
+and an after of every screen the work touched — used to be the worker's job to
+remember. It forgot often enough that missing captures became the single
+commonest reason a gate went back, so the console takes them itself.
+
+```bash
+npx playwright install chromium
+export BASELINE_PORT=8080          # a dev server on your untouched checkout
+export QA_STORAGE_STATE=/absolute/path/to/storage-state.json   # optional
+```
+
+For every QA step that names a route, the console drives both servers — the
+baseline for the *before*, the worktree's own for the *after* — at a fixed
+viewport with animations frozen, writes the images into the issue's evidence
+directory, and stamps them into the gate before the card ever reaches you.
+
+`BASELINE_PORT` has no default on purpose: a console that guessed a port would
+photograph whatever happened to be listening on it and call that your baseline.
+`QA_STORAGE_STATE` is a Playwright storage state for captures that need a signed-in
+session; the console hands the file to the browser and never opens it, and no
+credential is ever read, stored or typed. Leave either unset and the capture
+simply says which one it needs — steps a browser cannot drive (a SQL check, a
+transcript) keep the sanctioned empty pair and a note saying why.
+
 ## The five gates
 
 | Gate | After | What you decide |
@@ -134,8 +160,7 @@ machine.
 assign or merge anything: the GitHub module contains only `list` and `view`
 calls, the single comment path throws on any verb but `issue comment` and
 `pr comment`, and a test guards the module against ever exporting a writer.
-Worktree
-creation may bring a worktree into existence and do nothing else. One container
+Worktree creation may bring a worktree into existence and do nothing else. One container
 may be restarted, by name prefix, on your click. A process is signalled only
 when it can be attributed to a worker or to a dev server inside that worker's
 worktree. No credential is ever read, stored or displayed; logging in is always
@@ -149,6 +174,16 @@ rather than defaulted, because "no PR" and "no rework" are different answers.
 There are no rankings, no trend arrows, no recommended model and no automatic
 router: any cell under five runs is marked as unable to support a routing
 decision, and a difference between two small cells is not a finding.
+
+**A read it could not make is never dressed as a fact.** GitHub goes away —
+sometimes loudly, sometimes as a cost limit whose counters still read full. When
+a read fails the console keeps the previous answer and stamps the age of the
+*data*, never of the attempt; when it has no previous answer it says so on the
+row rather than inventing one, because a row that reports a healthy worker as
+dead will send you to restart work that already merged. The merged-PR read has a
+second road through the REST API for the day the first one is refused, a restart
+reloads the last good read instead of booting blind, and the banner names every
+failed read rather than the first.
 
 ## Where to read next
 

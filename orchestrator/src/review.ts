@@ -13,9 +13,7 @@
 
 /** How a round stopped being the one waiting on the operator. */
 export type ResolvedBy =
-  /** The operator started the rework from the console. `sam` is the legacy wire
-   *  value written into every gate file on disk; renaming it would strand every
-   *  round already persisted. */
+  /** The operator started the rework from the console. */
   | 'operator'
   /** the reviewer moved on, or asked again — the old ask is history either way */
   | 'superseded'

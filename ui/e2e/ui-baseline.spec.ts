@@ -528,6 +528,17 @@ test('exercises every primary view and consequential worker state', async ({ pag
   await expect(metricsTable.locator('thead th')).toHaveCount(14);
   await metricsTable.scrollIntoViewIfNeeded();
   await expectSanitizedSurface(page);
+  // The one ELEMENT shot in this file, and the only one whose height is not
+  // decided by the viewport. Playwright clips to the element's own box rounded
+  // outward, this table is 188.5px tall, and its offset in the document is
+  // fractional — so it rasterises identically but comes out 190px from y=437.875
+  // and 189px from y=438.125. That offset is a fact about the total height of
+  // everything above it in Settings, and `scrollTop` snaps to whole pixels at
+  // dpr 1, so a test cannot pin it. Adding one notification row to the list ten
+  // screens up moved the table a quarter of a pixel and shifted this picture by
+  // one row with the table itself unchanged. If this baseline fails after an
+  // edit to Settings COPY, check the ink profile before believing the table
+  // changed: an off-by-one-row shift is this, and re-recording is correct.
   await expect(page.locator('.md-table')).toHaveScreenshot('view-settings-metrics.png', SHOT);
 
   await openView(page, 'Guide');

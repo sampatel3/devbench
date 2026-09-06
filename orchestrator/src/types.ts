@@ -10,6 +10,8 @@ import type { GateCi } from './ci.js';
 import type { IssueRequest, BoardRequest } from './drafts.js';
 import type { QaProgress, QaStepView, QaVerdict } from './qa-verdict.js';
 import type { QaReworkEntry } from './rework.js';
+import type { CaptureReport } from './capture.js';
+import type { CloseVerdict } from './close-verdict.js';
 import type { ActionsFeed } from './actions.js';
 import type { NotifyPrefs } from './notify.js';
 import type { AgentProviderId } from './providers/types.js';
@@ -40,6 +42,8 @@ export type { ManualQa, ManualQaStep } from './manual-qa.js';
 export type { Quiz, QuizQuestion, QuizOption } from './quiz.js';
 export type { QaVerdict, QaVerdictStatus, QaStepState, QaStepView, QaProgress } from './qa-verdict.js';
 export type { QaReworkEntry, QaSnapshot } from './rework.js';
+export type { CaptureReport } from './capture.js';
+export type { CloseVerdict, CloseVerdictKind } from './close-verdict.js';
 
 /** Set once the console moved this card itself — see board.ts. The card then
  *  reads in the past tense: a thing that happened, not a thing wanted. */
@@ -61,6 +65,18 @@ export type GateFile = {
    *  Null before Gate E when nothing was reported; NEVER null at Gate E, where
    *  silence surfaces as `unconfirmed` rather than as nothing at all. */
   ci: GateCi | null;
+  /**
+   * What this gate file's `evidence` array claimed and the console refused, as
+   * one finished line for the card. Null when it kept everything.
+   *
+   * It rides on the gate rather than beside it because that is where the reader
+   * is: the evidence box is rendered from `.gate.json`, and the sentence saying
+   * what is MISSING from that box has to arrive with it or it arrives nowhere.
+   * `parseGateFile` does not set it — the field is filled in where the manifest
+   * is actually read (`worktrees.ts` for the live gate, `history.ts` for a past
+   * round), so nothing about which gate a worker is parked at can turn on it.
+   */
+  evidenceWarning?: string | null;
 };
 
 /**
@@ -115,6 +131,19 @@ export type WorkerStatus =
    *  the one state with nothing left to ask for. */
   | 'done'
   | 'checkpoint'
+  /**
+   * THE CONSOLE COULD NOT READ ENOUGH TO SAY.
+   *
+   * The only value here that describes the CONSOLE rather than the work: a
+   * worktree exists, nothing is running in it, and GitHub's PR lists failed this
+   * poll with no previous map to fall back on — so whether there is a PR, and
+   * what it did, is a question this row cannot answer. See `prsUnreadable` in
+   * `status.ts` for why it is not `checkpoint`, `no-worker` or `detached`.
+   *
+   * Transient by construction. The next successful poll replaces it with
+   * whatever the row actually is.
+   */
+  | 'unreadable'
   | 'failed';
 
 /**
@@ -132,8 +161,8 @@ export type PausedStamp = {
 };
 
 /**
- * SET ASIDE BY SAM. Not by the memory floor, not by the quota brake, not by
- * SIGSTOP — by him, in the console, on purpose.
+ * SET ASIDE BY THE OPERATOR. Not by the memory floor, not by the quota brake,
+ * not by SIGSTOP — by you, in the console, on purpose.
  *
  * It is called PARKED and not "paused" because `paused` is already spoken for
  * twice on this machine and both are automatic brakes on a MACHINE:
@@ -149,10 +178,10 @@ export type PausedStamp = {
  * nothing here to fall out of step with the worktree.
  */
 export type ParkedStamp = {
-  /** When he set it aside. Real clock, from the console. */
+  /** When you set it aside. Real clock, from the console. */
   at: string;
   /**
-   * Why, in his own words, or null when he did not say.
+   * Why, in your own words, or null when you did not say.
    *
    * Optional on purpose: a parked ticket with no reason is fine and must never
    * be blocked on a text box. But three weeks later "waiting for the design
@@ -170,7 +199,7 @@ export type CommentBlock = {
   /**
    * The ticket the comment was actually posted on, which is not always the row
    * this block hangs off — a worker often has something to say on a DIFFERENT
-   * issue (#4641's warned @UdayIND about #4317, whose PR inherits its work).
+   * issue (#4641's warned @reviewer-one about #4317, whose PR inherits its work).
    * The reply watch reads THIS number; without it, a reply on #4317 is looked
    * for on #4641 and never found.
    *
@@ -291,17 +320,17 @@ export type PullRequest = {
 };
 
 /**
- * Why a row has a worktree but no open issue of his behind it.
+ * Why a row has a worktree but no open issue of yours behind it.
  *
- * The console's issue list is open, assigned-to-or-raised-by-him and fifty long,
+ * The console's issue list is open, assigned-to-or-raised-by-you and fifty long,
  * so an issue leaves it for three unrelated reasons and a worktree outlives all
  * three. One placeholder sentence used to cover the lot, and #5697 — closed the
  * day before, still running a worker — read as a fault in the console rather
  * than as a ticket that had been signed off. Each reason gets its own words now.
  *
  *  - `closed`     — closed on GitHub. The usual one: QA signs off and closes.
- *  - `not-yours`  — still open, but no longer assigned to or raised by him.
- *  - `still-open` — open and his; it fell off the fifty-issue page.
+ *  - `not-yours`  — still open, but no longer assigned to or raised by you.
+ *  - `still-open` — open and yours; it fell off the fifty-issue page.
  *  - `unread`     — GitHub could not be read for it, and the row says so rather
  *                   than guessing.
  */
@@ -324,9 +353,19 @@ export type IssueRow = {
   /** The issue this was spun off from, when its body says so. See parent.ts. */
   spunOffFrom: number | null;
   /** Set only on a row the console synthesized from a worktree, when there is no
-   *  open issue of his behind it. Null on every ordinary row. */
+   *  open issue of yours behind it. Null on every ordinary row. */
   orphan?: OrphanIssue | null;
-  /** The Shape board column this card is in, e.g. `In review`. Null when the
+  /**
+   * What QA had said when this issue was first seen closed, and one finished
+   * sentence saying it. Null on an open row, and null on a closed one the
+   * console never read a verdict for — absence is "not established", never
+   * "nobody verified it". See `close-verdict.ts`.
+   *
+   * `line` is composed by the server and rendered by the card, the same shape
+   * `CaptureReport.line` uses: one fact, one wording, wherever it is read.
+   */
+  closeVerdict?: (CloseVerdict & { line: string }) | null;
+  /** The project board column this card is in, e.g. `In review`. Null when the
    *  issue is on no board or the poll has not run yet. */
   lane?: string | null;
   /**
@@ -378,9 +417,9 @@ export type IssueRow = {
   port: number | null;
   stage: number | null;
   gatesPassed: GateLetter[];
-  /** Set when the code moved after his Gate C approval — see decisions.ts. */
+  /** Set when the code moved after your Gate C approval — see decisions.ts. */
   codeSinceQa?: { approvedAt: string; headNow: string; at: string } | null;
-  /** Questions he left open at the gate he last approved. */
+  /** Questions you left open at the gate you last approved. */
   leftUnanswered?: string[];
 
   gate: GateFile | null;
@@ -412,6 +451,17 @@ export type IssueRow = {
   /** The most recent targeted rework: which steps went back to Build, and
    *  whether what came back carried the rest of the issue forward. */
   qaRework: QaReworkEntry | null;
+  /**
+   * The last screenshot capture the console ran for this issue, or null when it
+   * has never run one.
+   *
+   * It is on the row rather than left implicit in the pictures because a capture
+   * that FAILED has to be as visible as one that worked: a missing screenshot
+   * with no explanation is the thing this whole path exists to remove, and
+   * "the console tried and here is why it could not" is an answer you can act
+   * on in one step. `line` is composed by the server; the card renders it.
+   */
+  captureReport: CaptureReport | null;
   /** Questions asked at this gate and the answers that came back, without the
    *  gate having been decided either way. Null when nothing has been asked. */
   gateThread: GateThreadRecord | null;
@@ -661,6 +711,19 @@ export type ConsoleState = {
   workspaces: string[];
   repoPath: string;
   pollError: string | null;
+  /**
+   * A read that worked, but not the way it usually does — today, the merged-PR
+   * list answering off the REST budget after GraphQL refused it.
+   *
+   * Its own field beside `pollError` because it is its own claim: nothing
+   * failed, and a degraded read still may not pass for the full one, which is
+   * why it is not simply left unsaid. Null on an ordinary poll.
+   */
+  pollNote: string | null;
+  /** Whether that note is worth acting on. A whole fallback read is quiet; a
+   *  SHORT one is a warning, because rows below it have gone to "cannot say".
+   *  See `#pollNoteWarn`. False whenever `pollNote` is null. */
+  pollNoteWarn: boolean;
   /** When GitHub was last read, or null before the first poll finished. It is on
    *  screen beside Refresh: at a fifteen-minute cadence, data with no age on it
    *  looks live when it is not. */

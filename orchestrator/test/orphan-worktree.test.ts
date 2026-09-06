@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Orchestrator } from '../src/orchestrator.js';
 import { loadConfig } from '../src/config.js';
 import { killSpawnedWorkers } from './fixtures/spawned.js';
+import { memoryOk } from './fixtures/memory.js';
 import * as gh from '../src/gh.js';
 import * as resources from '../src/resources.js';
 import type { GhIssueFacts } from '../src/gh.js';
@@ -114,10 +115,10 @@ function orch(deps: { log?: (line: string) => void } = {}) {
   return new Orchestrator(
     loadConfig({
       REPO: 'example-org/example-repo',
+      REPO_PATH: repo,
       // Named rather than defaulted: there is no ASSIGNEE default any more, and
       // "is this issue still theirs?" is exactly what these cases turn on.
       ASSIGNEE: 'operator',
-      REPO_PATH: repo,
       STATE_FILE: stateFile,
       RUNS_FILE: join(home, 'runs.jsonl'),
       STREAM_DIR: join(home, 'runs'),
@@ -243,22 +244,128 @@ describe('the reason a blocked row gives', () => {
   });
 });
 
-describe('dispatching a closed issue from the queue', () => {
-  it('does not start it, takes it out, and says why', async () => {
+/**
+ * #5554 — TWELVE INSTANT EXITS, ABOUT £30, ON A TICKET THAT WAS ALREADY CLOSED.
+ *
+ * The line was drawn in the wrong place. `restartFresh` refused a closed issue;
+ * a queued dispatch does not go through it. So the queue went on serving #5554
+ * from its head, a worker started, found nothing to do and exited, the console
+ * queued it again, and it looped — twelve times.
+ *
+ * The guard is at HEAD (0bca1b6). These are the variants of "already closed" it
+ * has to hold for, and the one thing it must not do instead: fail silently.
+ */
+describe('nothing starts a closed issue off the queue', () => {
+  /** Every way the console can be looking at a closed ticket. */
+  const seed = async (deps: { log?: (line: string) => void } = {}) => {
+    describes(facts());
+    const o = orch(deps);
+    await o.start();
+    return o;
+  };
+
+  it('refuses a row whose STATUS is `done`', async () => {
+    const o = await seed();
+    // The status is the thing a person reads, and `done` is the end of the line.
+    expect(row(o).status).toBe('done');
+
+    o.enqueue(ISSUE, o.state().defaultAccount);
+    await wait(200);
+
+    expect(o.state().queue).not.toContain(ISSUE);
+    expect(row(o).live ?? null).toBeNull();
+    await o.stop();
+  });
+
+  it('refuses a row whose ORPHAN REASON is `closed`', async () => {
+    const o = await seed();
+    // The fact underneath the status: GitHub says CLOSED, with the stamp.
+    expect(row(o).orphan).toEqual({ reason: 'closed', closedAt: CLOSED_AT, assignees: [] });
+
+    o.enqueue(ISSUE, o.state().defaultAccount);
+    await wait(200);
+
+    expect(o.state().queue).not.toContain(ISSUE);
+    expect(row(o).live ?? null).toBeNull();
+    await o.stop();
+  });
+
+  it('refuses one that closes WHILE it is queued', async () => {
+    // The dangerous one, and the one the incident actually was: it was open and
+    // theirs when it went into the line, and by the time a slot freed it had been
+    // signed off. Nothing re-asks the question between the queueing and the
+    // start except this guard.
+    describes(facts({ state: 'OPEN', closedAt: null, author: 'operator', assignees: ['operator'] }));
+    // The desk is full, so the ticket waits — the ordinary reason a dispatch is
+    // minutes or hours after the queueing. Under vitest the watcher's probes are
+    // inert, so this poll reading is the whole verdict and nothing overrides it.
+    const probe = vi.spyOn(resources, 'probeResources');
+    probe.mockResolvedValue(memoryOk({ ok: false, reason: 'memory is tight' }));
+
+    const o = orch();
+    await o.start();
+    o.enqueue(ISSUE, o.state().defaultAccount);
+    await wait(100);
+    // Held on the machine, not started, and still open at this point.
+    expect(o.state().queue).toContain(ISSUE);
+    expect(row(o).orphan?.reason).toBe('still-open');
+
+    // QA closes it. The desk frees at the same moment — which is exactly the
+    // shape that used to start it.
+    describes(facts());
+    probe.mockResolvedValue(memoryOk());
+    await o.poll();
+
+    expect(o.state().queue).not.toContain(ISSUE);
+    expect(row(o).live ?? null).toBeNull();
+    expect(row(o).status).toBe('done');
+    await o.stop();
+  });
+
+  it('drops it with a reason, and does not mark the row failed', async () => {
+    // NOT SILENTLY. A queued row that disappears with nothing saying why is the
+    // shape of a bug, and the reason is the entire point of taking it out.
+    const lines: string[] = [];
+    const o = await seed({ log: (l) => lines.push(l) });
+
+    o.enqueue(ISSUE, o.state().defaultAccount);
+    await wait(200);
+
+    expect(lines.join('\n')).toContain('the issue is closed on GitHub');
+    expect(lines.join('\n')).toContain('Reopen it there to queue it again');
+    // And in the console's own state, so the last decision it reports making is
+    // not "starting #5697" over a start it declined.
+    expect(o.state().dispatchReason).toContain(`#${ISSUE} is closed on GitHub`);
+    expect(o.state().dispatchReason).toContain('taken out of the line');
+    // A closed issue is not a failed run: a `failed` row would outrank the
+    // `done` the close has earned, and there is nothing here to retry.
+    expect(row(o).status).toBe('done');
+    expect(row(o).lastError).toBeNull();
+    await o.stop();
+  });
+
+  it('takes the held answer out with it, rather than leaving it to be replayed', async () => {
+    // The incident's own shape: a decision taken while the desk was full, held
+    // on disk, and put back in the line by the next restart. It was about work
+    // that has since been signed off, so it goes when the queue entry goes —
+    // exactly as a dequeue by hand drops it.
+    writeFileSync(
+      stateFile,
+      JSON.stringify({ pendingResume: { [String(ISSUE)]: 'approved — ship it' }, sentBackResumes: {} }),
+    );
     describes(facts());
     const lines: string[] = [];
     const o = orch({ log: (l) => lines.push(l) });
+    // `start()` puts every held decision back in the line and then polls, so the
+    // refusal happens inside it — which is precisely the incident: the console
+    // was restarted, and #5697 was at the head of the queue the next evening.
     await o.start();
 
-    o.enqueue(ISSUE, o.state().defaultAccount);
-    // Dispatch is fired and forgotten from the enqueue; give it its turn.
-    await new Promise((r) => setTimeout(r, 200));
-
-    expect(o.state().queue).not.toContain(ISSUE);
-    expect(o.state().issues.find((r) => r.number === ISSUE)?.live ?? null).toBeNull();
     expect(lines.join('\n')).toContain('the issue is closed on GitHub');
-    // Not a failure. A `failed` row would outrank the `done` the close earned.
-    expect(row(o).status).toBe('done');
+    expect(o.state().queue).not.toContain(ISSUE);
+    expect(row(o).live ?? null).toBeNull();
+    const saved = JSON.parse(readFileSync(stateFile, 'utf8')) as { pendingResume: Record<string, string> };
+    expect(saved.pendingResume[String(ISSUE)]).toBeUndefined();
     await o.stop();
   });
 

@@ -125,6 +125,69 @@ describe('parseTestResult — explicit verdict headings, and only explicit verdi
   });
 });
 
+/**
+ * THE BOILERPLATE HEADER OVER A FAILED BODY.
+ *
+ * `qa-carol` posts from a saved template whose first line already reads
+ * `Test Result: _Pass_` and fills the real outcome into the template's own
+ * `Actual:` field below it — the same field this repo's Stage 9 handoff prints
+ * as `**Actual:** (QA to fill)`. Reading the first line alone does worse than
+ * miss a verdict: it reports a FAIL as a pass, on the row, on the phone and in
+ * the priority band. 14 of 27 UAT comments came back wrong or blank.
+ *
+ * The rule is one-directional and that is the whole safety argument: the body
+ * can only make the verdict WORSE. A stray `Result: Pass` further down can
+ * never demote a stated Fail.
+ */
+describe('parseTestResult — the body outranks a header nobody edited', () => {
+  it('reads the FAIL under an unedited `Test Result: _Pass_` header', () => {
+    const body = [
+      'Test Result: _Pass_',
+      '**Description:** Totals should show the customer count',
+      '**Steps to Recreate:** 1. open the dashboard on UAT',
+      '**Expected:** _849_',
+      '**Actual:** _Fail — still shows 0_',
+    ].join('\n');
+    expect(parseTestResult(body)).toBe('Fail');
+  });
+
+  it('takes Partial Pass from the body under a Pass header, and Fail over Partial Pass', () => {
+    expect(parseTestResult('Test Result: _Pass_\n**Actual:** Partial Pass — paging is still wrong')).toBe(
+      'Partial Pass',
+    );
+    expect(parseTestResult('**Test Result:** Partial Pass\nRe-test Result: Fail')).toBe('Fail');
+  });
+
+  it('NEVER lets the body talk a stated Fail back up to a Pass', () => {
+    expect(parseTestResult('**Test Result:** Fail\n**Actual:** Pass on the second attempt')).toBe('Fail');
+    expect(parseTestResult('**Test Result:** Partial Pass\n**Actual:** Pass')).toBe('Partial Pass');
+  });
+
+  it('leaves an ordinary verdict exactly where it was — the body says nothing, so nothing moves', () => {
+    expect(parseTestResult('**Test Result:** Pass\n**Description:**\nThe fail case now shows a message.')).toBe('Pass');
+    expect(parseTestResult('**Test Result:** Pass\n**Expected:** Fail message shown\n**Actual:** it is')).toBe('Pass');
+  });
+
+  it('still refuses a quoted or mid-sentence line in the body — the line-start anchor holds', () => {
+    expect(parseTestResult('**Test Result:** Pass\n> Test Result: Fail\nthat was last round')).toBe('Pass');
+    expect(parseTestResult('**Test Result:** Pass\nPreviously the Actual: Fail line said otherwise')).toBe('Pass');
+    expect(parseTestResult('**Test Result:** Pass\n**Actual:** Passes every step')).toBe('Pass');
+  });
+
+  it('does not turn a body verdict into a verdict on its own — gate 4 is unmoved', () => {
+    // A comment that does not OPEN with the template is still not a verdict; it
+    // goes to the FYI safety valve, exactly as it did before.
+    expect(parseTestResult('Hi there,\n**Actual:** Fail')).toBeNull();
+    expect(parseTestResult('Thanks — Actual: Fail on step 3')).toBeNull();
+  });
+
+  it('reads a standalone **Fail:** heading, the third member of a family whose other two it already read', () => {
+    expect(parseTestResult('**Fail:**\n@operator\nBroker search is broken')).toBe('Fail');
+    // …and the both-ends anchor still keeps prose out of it.
+    expect(parseTestResult('**Fail:** except for paging')).toBeNull();
+  });
+});
+
 describe('verdictGates — four gates, each one on its own', () => {
   const ctx = { me: ME, mergedAt: MERGED };
 

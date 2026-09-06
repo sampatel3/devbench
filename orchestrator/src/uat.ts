@@ -5,7 +5,7 @@
  * like from the outside:
  *
  *  - `changes-requested` is a PRE-MERGE label on feature PRs into `dev`. All 142
- *    PRs that have ever carried it are base `dev`; `s2-pr-swarm[bot]` applies it
+ *    PRs that have ever carried it are base `dev`; `pr-swarm[bot]` applies it
  *    and the author removes it on push. `review.ts` already owns that loop. It is
  *    NOT the post-UAT signal and nothing in this file looks at it.
  *  - Promotion PRs (base `test` = UAT, base `main`) get no reviews at all.
@@ -63,23 +63,23 @@ export type VerdictGateFailure = 'not-a-user' | 'own-comment' | 'no-template' | 
 /**
  * The template, on the FIRST non-empty line.
  *
- * Written against the WHOLE corpus, not one comment. A live read of every
- * verdict-shaped first line on one repo (78 of them) found two QA testers who
- * do not write the same thing:
+ * Written against the WHOLE corpus, not one comment. Read live on 2026-08-12
+ * (`repo:example-org/example-repo "Test Result" in:comments`, 78 verdict-shaped
+ * first lines) this repo has two QA testers and they do not write the same thing:
  *
- *     style A  `**Test Result:** Pass`     54 of 54 parsed
- *     style B  `Test Result: _Pass_`        0 of 24 parsed
+ *     qa-alice  `**Test Result:** Pass`     54 of 54 parsed
+ *     qa-bob    `Test Result: _Pass_`        0 of 24 parsed
  *
  * The first version of this regex allowed `*` emphasis and not `_`, so every
- * verdict in style B — every Fail included — was invisible to the entire
- * feature. That is why the emphasis markers are a character class and not a
- * literal, and why `Re-test Result:` is in here: both are observed, neither was
- * guessed.
+ * verdict from one of the two testers — every Fail included — was invisible to
+ * the entire feature. That is why the emphasis markers are a character class
+ * and not a literal, and why `Re-test Result:` is in here: both are observed,
+ * neither was guessed.
  *
  * The verdict word ends on `(?![A-Za-z0-9])`, NOT on `\b`. `_` is a word
  * character, so `\b` does not exist between the `s` of `Pass` and the closing
  * `_` of `_Pass_` — a `\b` here silently reintroduces exactly the bug above on
- * style B, whose verdicts are wrapped in underscores.
+ * the tester whose verdicts are wrapped in underscores.
  *
  * Every gate other than this one only EXCLUDES things; this is the only gate
  * that finds anything. What it still misses is caught by
@@ -88,6 +88,12 @@ export type VerdictGateFailure = 'not-a-user' | 'own-comment' | 'no-template' | 
  *
  * Anchored to the line start on purpose: "the customer said Test Result: Fail"
  * quoted mid-sentence is not a verdict.
+ *
+ * This line decides WHETHER a comment is a verdict. It no longer decides WHICH
+ * one: a tester whose saved template opens `Test Result: _Pass_` states the real
+ * outcome further down, so `BODY_VERDICT` reads the rest and the worse of the
+ * two wins. Gate 4 is unmoved — a comment that does not open with this is still
+ * not a verdict.
  */
 const TEMPLATE =
   /^\s*[*_]*\s*(?:Re-?\s*)?Test\s+Results?\s*[*_]*\s*:\s*[*_]*\s*(Partial\s+Pass|Partial|Failed|Fail|Pass)(?![A-Za-z0-9])/i;
@@ -97,9 +103,62 @@ const TEMPLATE =
  * on following lines. Unlike `TEMPLATE`, this form is anchored at BOTH ends.
  * That strictness is load-bearing: `Partial Pass: the search page is broken` is
  * prose, not a machine-readable verdict, and must stay in the safety valve.
+ *
+ * `Fail` is in the alternation even though only `Pass` and `Partial Pass` have
+ * been seen in this form. It is the third member of a family whose other two are
+ * observed, `BARE_VERDICT_LABEL` below already anticipated it, and the cost of
+ * the two spellings disagreeing is that the one verdict that must never be
+ * missed is the one that is. The both-ends anchor is what keeps it safe.
  */
 const BARE_VERDICT_HEADING =
-  /^\s*\*\*(Partial\s+Pass|Pass):\*\*\s*$/i;
+  /^\s*\*\*(Partial\s+Pass|Failed|Fail|Pass):\*\*\s*$/i;
+
+/**
+ * THE BODY'S OWN VERDICT, which outranks the header when the header is a
+ * template the tester did not edit.
+ *
+ * `qa-bob` posts from a saved template whose first line already reads
+ * `Test Result: _Pass_`. The outcome is filled in below, in the template's own
+ * `Actual:` field — the same field this repo's Stage 9 handoff prints as
+ * `**Actual:** (QA to fill)`. Reading only the first line therefore does worse
+ * than miss a verdict: it reports a FAIL as a pass, on the row, on the phone,
+ * and in the priority band. 14 of 27 UAT comments read live came back wrong or
+ * blank, which is the majority of the QA function.
+ *
+ * The labels are the template's, not invented: `Test Result` (and its `Re-`
+ * form), `Result`, and `Actual`. Same verdict words and the same
+ * `(?![A-Za-z0-9])` terminator as `TEMPLATE`, so "Passes on step 3" is not a
+ * Pass — and the same line-start anchor, so a quoted `> Test Result: Fail` from
+ * an earlier round and a mid-sentence mention are both still prose.
+ *
+ * The emphasis runs are `[\s*_]*` rather than `TEMPLATE`'s `\s*[*_]*\s*`
+ * because both orders are written live: `Test Result: _Pass_` puts the space
+ * first, `**Actual:** _Fail_` puts the marker first, and a class that admits
+ * only one order reads one tester and not the other. That is the same bug the
+ * underscore fix already cost this file once.
+ */
+const BODY_VERDICT =
+  /^[\s*_]*(?:(?:Re-?\s*)?Test\s+Results?|Actual|Result)[\s*_]*:[\s*_]*(Partial\s+Pass|Partial|Failed|Fail|Pass)(?![A-Za-z0-9])/i;
+
+/**
+ * Which verdict wins when a comment states two.
+ *
+ * ONE DIRECTION ONLY: the body can make the verdict worse, never better. A
+ * header of unedited boilerplate can hide a Fail, so the body has to be able to
+ * overturn it; the reverse — a stray `Result: Pass` further down demoting a
+ * stated Fail — is the failure this whole file exists to prevent, and it is not
+ * possible here. It is the same asymmetry `revisitSendBack` settles the same
+ * way: Fail is the safe read, because Fail is the one that puts the row in front
+ * of the operator.
+ */
+const SEVERITY: Record<UatVerdictKind, number> = { Pass: 0, 'Partial Pass': 1, Fail: 2 };
+
+const wordToVerdict = (raw: string): UatVerdictKind => {
+  const word = raw.toLowerCase().replace(/\s+/g, ' ');
+  if (word === 'pass') return 'Pass';
+  if (word === 'fail' || word === 'failed') return 'Fail';
+  return 'Partial Pass';
+};
 
 /**
  * The LABEL alone — "this comment is trying to be a verdict" — without requiring
@@ -114,7 +173,7 @@ const BARE_VERDICT_HEADING =
 const TEMPLATE_LABEL = /^\s*[*_]*\s*(?:Re-?\s*)?Test\s+Results?(?![A-Za-z0-9])/i;
 
 /** A malformed member of the bare-heading family still belongs in the quiet
- * safety valve, including a future `Fail` spelling that has not been observed. */
+ * safety valve — `**Fail:** and here is why` has the words but not the shape. */
 const BARE_VERDICT_LABEL = /^\s*\*\*(?:Partial\s+Pass|Fail|Pass):\*\*/i;
 
 /** A line that is nothing but @mentions, with nothing else on it. */
@@ -124,13 +183,12 @@ const MENTION_ONLY = /^\s*(?:@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?[ \t]*)+$/
  * The first line that could carry the verdict — leading @mention-only lines
  * skipped.
  *
- * A real incident: a tester's Fail on #4619 (P1, customer-reported) opened with
- * an @mention of the operator on its own line and `Test Result: Fail` beneath
- * it. The first non-empty line was the mention, TEMPLATE did not match it, and
- * gate 4 failed `no-template` — so a QA Fail landed as a low-tier FYI row, the
- * lane went to `Revisit` while the card kept offering the pre-QA Stage 9 prompt
- * ("draft the QA ready-to-verify comment"), and nothing said the verdict had
- * arrived.
+ * On 2026-08-18 qa-alice's Fail on #4619 (P1, customer-reported) opened with an
+ * @mention of the operator on its own line and `Test Result: Fail` beneath it.
+ * The first non-empty line was the mention, TEMPLATE did not match it, and gate 4 failed
+ * `no-template` — so a QA Fail landed as a low-tier FYI row, the lane went to
+ * `Revisit` while the card kept offering the pre-QA Stage 9 prompt ("draft the
+ * QA ready-to-verify comment"), and nothing said the verdict had arrived.
  *
  * Only mention-ONLY lines are skipped, so the line-start anchor still does its
  * job: `Hi there,` / `@operator please look at this` are prose, and a verdict
@@ -139,15 +197,29 @@ const MENTION_ONLY = /^\s*(?:@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?[ \t]*)+$/
 const firstNonEmptyLine = (body: string): string | undefined =>
   body.split('\n').find((l) => l.trim() !== '' && !MENTION_ONLY.test(l));
 
+/**
+ * The comment's verdict, or null.
+ *
+ * Gate 4 is unchanged and it is still the first line that opens it: a comment
+ * that does not BEGIN with the template is not a verdict, so prose that quotes
+ * one stays prose and the safety valve keeps catching what this misses. What is
+ * new is what happens after the first line matches — every later line is read
+ * too, and the most severe verdict any of them states is the answer. See
+ * `BODY_VERDICT`.
+ */
 export function parseTestResult(body: string): UatVerdictKind | null {
   const firstLine = firstNonEmptyLine(body);
   if (firstLine === undefined) return null;
   const m = TEMPLATE.exec(firstLine) ?? BARE_VERDICT_HEADING.exec(firstLine);
   if (!m) return null;
-  const word = m[1]!.toLowerCase().replace(/\s+/g, ' ');
-  if (word === 'pass') return 'Pass';
-  if (word === 'fail' || word === 'failed') return 'Fail';
-  return 'Partial Pass';
+  let verdict = wordToVerdict(m[1]!);
+  for (const line of body.split('\n')) {
+    const found = BODY_VERDICT.exec(line);
+    if (!found) continue;
+    const stated = wordToVerdict(found[1]!);
+    if (SEVERITY[stated] > SEVERITY[verdict]) verdict = stated;
+  }
+  return verdict;
 }
 
 /** Does this comment open with a known verdict-label family, whatever follows it? */

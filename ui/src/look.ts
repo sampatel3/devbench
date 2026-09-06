@@ -2,8 +2,8 @@
  * What a row LOOKS like: the chip's colour class, and the rail's left edge.
  *
  * The operator asked for colour coding on the pills and the issue cards, so that
- * opening the console makes each row's status — and what is actively happening on
- * it — obvious at a glance.
+ * opening the console makes it obvious what the status of each row is, and which
+ * of them something is actively happening on.
  *
  * TWO BUGS, not a redesign. The palette in `styles.css` was already deliberate
  * and each colour already carried a stated meaning; it was simply not applied to
@@ -12,11 +12,11 @@
  *   1. SEVEN of the sixteen statuses fell through the Chip's ternary to `''`.
  *      Two of them — `checkpoint` and `detached` — are work that STOPPED and
  *      will never restart itself, and they rendered pixel-identical to `queued`
- *      and `pr-open`, which need nothing from you. A dead worker and a healthy
- *      PR under review were the same colour.
+ *      and `pr-open`, which need nothing from the operator. A dead worker and a
+ *      healthy PR under review were the same colour.
  *   2. The rail's orange edge was `.rail-item.on.gate`, requiring the row to be
  *      SELECTED. The mark that says "this one is asking you something" only
- *      appeared once you had already clicked it.
+ *      appeared once the operator had already clicked it.
  *
  * So: no new hues. One hue, one meaning, everywhere.
  *
@@ -48,10 +48,10 @@ export type Lookable = Pick<IssueRow, 'status' | 'uatFail' | 'waiting' | 'parked
  */
 export function chipClass(row: Pick<Lookable, 'status' | 'parked'>): string {
   const s: WorkerStatus = row.status;
-  // FIRST, above everything including the orange gates. You parked this row, or
-  // a named person owes a reply on it: either way nothing is going to happen
-  // and it must stop shouting. The chip's TEXT is untouched — a parked row at
-  // gate C still reads "AT GATE C", because it is still at gate C — so what
+  // FIRST, above everything including the orange gates. The operator parked this
+  // row, or a named person owes a reply on it: either way nothing is going to
+  // happen and it must stop shouting. The chip's TEXT is untouched — a parked row
+  // at gate C still reads "AT GATE C", because it is still at gate C — so what
   // this removes is the volume, not the fact. See `isAside`.
   if (isAside(row)) return 'aside';
   if (ORANGE.includes(s)) return 'gate';
@@ -64,12 +64,19 @@ export function chipClass(row: Pick<Lookable, 'status' | 'parked'>): string {
   // nothing.
   if (s === 'active' || s === 'preparing') return 'active';
   // The gap that mattered most. Both are STOPPED — priority.ts: "nobody is
-  // working these any more, so they are on you again" — and both used to render
-  // as plain grey. They share `--ice` with `paused` but NOT its class: the
-  // paused chip carries a solid square meaning "frozen with SIGSTOP, nothing
+  // working these any more, so they are on the operator again" — and both used
+  // to render as plain grey. They share `--ice` with `paused` but NOT its class:
+  // the paused chip carries a solid square meaning "frozen with SIGSTOP, nothing
   // lost, one click resumes", and neither a checkpoint nor a dead worker holds a
   // frozen process. Same colour, one fewer false implication.
   if (s === 'checkpoint' || s === 'detached') return 'held';
+  // Ice too, and for the one thing about this row that WAS read: there is a
+  // worktree on disk and nothing is running in it. It is not `held`'s other
+  // meaning — nobody has established that this work stopped — but ice is the
+  // only colour here that states a local fact rather than a claim about GitHub,
+  // and the grey below would say "somebody else is moving it", which is exactly
+  // the assertion the console has just failed to make.
+  if (s === 'unreadable') return 'held';
   // A fact read off GitHub, so it keeps its own colour. `pr-merged` sinks in the
   // ORDER because QA picks merged work up unasked — six for six, no handover
   // comment ever posted — but that is an inference about a team's habit, and the
@@ -79,16 +86,16 @@ export function chipClass(row: Pick<Lookable, 'status' | 'parked'>): string {
   if (s === 'failed') return 'failed';
   // Nothing started yet, or nothing left to do.
   if (s === 'no-worker' || s === 'done') return 'none';
-  // AWAITING MERGE, and now its own colour. The operator asked for `pr-open` to
-  // get a colour of its own on the overview page, because those rows are awaiting
-  // merge.
+  // AWAITING MERGE, and now its own colour. The operator asked for PR Open to
+  // get its own colour on the overview page too, because those rows are now
+  // awaiting merge.
   //
   // It shared the grey with `queued` under one true sentence — somebody else is
   // moving it — which turned out to cover two states that are nothing alike.
   // `queued` is work that has not begun, waiting for a slot on THIS machine and
-  // entirely in your gift; `pr-open` is work that is finished, out of your hands,
-  // and waiting on whoever merges. On a grid scanned for "what is nearly done",
-  // those are the two rows that most need separating.
+  // entirely in the operator's gift; `pr-open` is work that is finished, out of
+  // their hands, and waiting on the team lead. On a grid scanned for "what is
+  // nearly done", those are the two rows that most need separating.
   //
   // WHY A NEW HUE rather than a shade of the two already on the PR path. `--ok`
   // is "it landed" and `--live` is "moving right now", and the note above is
@@ -140,12 +147,12 @@ export function edgeClass(row: Lookable): string {
   // and already the only 3px edge on the page.
   if (isUatFail(row)) return 'uat';
   // Both halves of "is this asking something of me": the statuses that stop on
-  // you, and an open or merged PR still holding items of yours — the server's own
-  // `waiting.yours`, the same list the card prints. That second half used to be
-  // a separate check here, which is how it came to be the ONLY surface reading
-  // it: the header count next to this edge kept its own status-only answer. It
-  // now lives inside `waitingOnYou`, so the edge, the count and the order cannot
-  // drift apart again.
+  // the operator, and an open or merged PR still holding items of theirs — the
+  // server's own `waiting.yours`, the same list the card prints. That second
+  // half used to be a separate check here, which is how it came to be the ONLY
+  // surface reading it: the header count next to this edge kept its own
+  // status-only answer. It now lives inside `waitingOnYou`, so the edge, the
+  // count and the order cannot drift apart again.
   if (waitingOnYou(row)) return 'gate';
   return '';
 }

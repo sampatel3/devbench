@@ -73,6 +73,9 @@ export function pushDeviceNote(count: number, thisOne: boolean): string {
 const KIND_LABEL: Record<string, string> = {
   'uat-fail': 'UAT FAIL',
   'uat-fail-inflight': 'UAT fail — fix in flight',
+  // Not "UAT FAIL": the verdict is the same, and what makes this one worth its
+  // own words is that the ticket was signed off over the top of it.
+  'closed-over-fail': 'closed over a QA fail',
   'changes-requested': 'changes requested',
   'review-requested': 'review asked of you',
   mention: 'mentioned',
@@ -160,6 +163,7 @@ export function fixFirstLine(actions: readonly Action[]): string | null {
 /** What the settings panel offers, in the order it offers it. */
 export const SWITCHABLE: Array<{ kind: string; what: string }> = [
   { kind: 'uat-fail', what: 'a human tested it in UAT and sent it back' },
+  { kind: 'closed-over-fail', what: 'it was closed while a tester’s fail still stood' },
   { kind: 'changes-requested', what: 'a reviewer asked for changes on your PR' },
   { kind: 'review-requested', what: 'someone asked you to review their PR' },
   { kind: 'ci-failed', what: 'CI went red on your open PR' },

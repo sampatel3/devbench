@@ -8,15 +8,21 @@ accounts.json
 connections.json
 runs.jsonl
 *.gate-provenance.jsonl
-# The operator's gate decisions — live data, same class as state.json and
-# runs.jsonl. It is the record of what they approved and when; it does not
-# belong in history.
+# Sam's gate decisions — live data, same class as state.json and runs.jsonl.
+# It is the record of what he approved and when; it does not belong in history.
 decisions.jsonl
 push-keys.json
+
+# Demo-kit run transcripts and their index — live data, same class as runs.jsonl. A skill
+# transcript is a Claude session's full output for one repo, so it is both large and a record
+# of what was on that machine at the time; neither belongs in history.
+demo-runs/
 actions.json
+# The last good GitHub poll, reloaded at startup as stale seed data — live
+# data, same class as state.json and actions.json.
+github-snapshot.json
 runs/
 ui/dist/
 ui/test-results/
 ui/playwright-report/
-# `tsc -b`, the documented type-check, leaves this behind even under `noEmit`.
-*.tsbuildinfo
+spike/scratch/

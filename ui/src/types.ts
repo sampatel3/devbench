@@ -24,6 +24,10 @@ export type GateFile = {
   questions: string[];
   /** Null before Gate E when nothing was reported; never null at Gate E. */
   ci?: GateCi | null;
+  /** What this gate file's `evidence` array listed and the console would not
+   *  serve, as one finished line. Optional: a bundle built before the field
+   *  existed is served by a console that sends it, and the other way round. */
+  evidenceWarning?: string | null;
 };
 
 export type ProvisionStatus = {
@@ -66,6 +70,12 @@ export type GateHistoryRecord = {
   provider: AgentProvider | null;
   model: string | null;
   agentSessionId: string | null;
+  /** Same line as `GateFile.evidenceWarning`, for this past round. */
+  evidenceWarning?: string | null;
+  /** Lines of `.gate-history.jsonl` that could not be read, filed against the
+   *  round they followed — "1 unreadable round (bad gate letter 'B-postscript')".
+   *  Optional for the same old-bundle reason as every other new field. */
+  quarantined?: string | null;
 };
 
 /** One question you asked at a gate, and its answer once it lands. */
@@ -96,6 +106,27 @@ export type GateThreadRecord = {
 export type GateThreadFileEntry = { id: number; q: string; a: string; at: string | null };
 
 /**
+ * What one screenshot capture run did.
+ *
+ * The console drives its own browser at gate C so a card arrives with the
+ * pictures on it rather than a warning asking for them. `line` is a finished
+ * sentence composed by the server — including for a run that captured nothing,
+ * because a screenshot that is silently absent is the failure this replaced.
+ */
+export type CaptureReport = {
+  at: string;
+  line: string;
+  ok: boolean;
+  /** `<stepId>/<leg>` for every capture written and filed. */
+  wrote: string[];
+  /** Steps whose before and after are the same bytes — a pair that proves
+   *  nothing, and the thing you spotted yourself. */
+  identical: number[];
+  /** Everything refused, skipped or failed, one line each. */
+  notes: string[];
+};
+
+/**
  * One step of the click-script. Before and after are ONE step — never a step for
  * the before and another for the after.
  */
@@ -108,6 +139,11 @@ export type ManualQaStep = {
   do: string;
   /** A deep link, or null when there was none we would link to. */
   url: string | null;
+  /** The app path this step is on — `/quotes/1234`. `url` is what you click;
+   *  this is what the console drives to when it takes the screenshots itself.
+   *  Absent on an older server and on any step with no screen: either way the
+   *  step is not drivable and its captures stay the worker's. */
+  route?: string | null;
   /** What it did before this change. Null WITH a null `beforeShot` means the
    *  behaviour is new and there is nothing to compare. */
   before: string | null;
@@ -499,6 +535,10 @@ export type WorkerStatus =
    *  the one state with nothing left to ask for. */
   | 'done'
   | 'checkpoint'
+  /** The console could not read GitHub's PR lists this poll and had no previous
+   *  map to fall back on, so this row cannot say where its PR stands. It says
+   *  that instead of guessing. Transient: the next good poll replaces it. */
+  | 'unreadable'
   | 'failed';
 
 /** A worker frozen with SIGSTOP, and who froze it — a pause you asked for and a
@@ -576,6 +616,26 @@ export type IssueRow = {
     closedAt: string | null;
     assignees: string[];
   } | null;
+  /**
+   * What QA had said when the console first saw this issue closed.
+   *
+   * OPTIONAL, like every field the server may not send: a rebuilt `ui/dist` in
+   * front of a console that has not restarted sends none of this, and a closed
+   * row must then read exactly as it did before rather than claiming nobody
+   * verified it. Absent and null are the same thing here — "never established" —
+   * and `verdict: 'none'` is the different, louder one: the console looked at
+   * the comments and found no verdict at all.
+   *
+   * `line` is the server's finished sentence. The page renders it and never
+   * re-words it, the same rule `captureReport.line` keeps.
+   */
+  closeVerdict?: {
+    closedAt: string | null;
+    verdict: 'pass' | 'fail' | 'partial' | 'none';
+    by: string | null;
+    at: string;
+    line: string;
+  } | null;
   /** The project board column this card is in, e.g. `In review`. Null when the
    *  issue is on no board or the poll has not run yet. */
   lane?: string | null;
@@ -644,8 +704,8 @@ export type IssueRow = {
   gateReport: string | null;
   gateEvidence: EvidenceItem[];
   /**
-   * A supercharged run — the console passing gates A, B and C on your standing
-   * instruction, stopping at D.
+   * A supercharged run — the console passing gates A, B and C on the operator's
+   * standing instruction, stopping at D.
    *
    * OPTIONAL for the same reason `parked` is: a `ui/dist` built before this
    * field existed is served by a console that sends it, and an older page must
@@ -670,6 +730,9 @@ export type IssueRow = {
   qaProgress: QaProgress;
   /** The most recent targeted rework, or null when none has been sent. */
   qaRework: QaReworkEntry | null;
+  /** What the last screenshot capture did, or null when none has run. Absent on
+   *  an older server — a fresh bundle talks to whatever is serving it. */
+  captureReport?: CaptureReport | null;
   /** Questions asked at this gate, and the answers, with the gate still open. */
   gateThread: GateThreadRecord | null;
   history: GateHistoryRecord[];
@@ -736,6 +799,10 @@ export type IssueRow = {
     isDraft: boolean;
     /** When it merged, for a PR that has. */
     mergedAt?: string | null;
+    /** Set when this row's fix was folded into ANOTHER issue's PR — the rail
+     *  marks it so no card claims someone else's PR as this issue's own work.
+     *  Mirrors `inheritPr` in `orchestrator/src/status.ts`. */
+    inherited?: boolean;
     /** The pre-merge checklist from the PR body: what is ticked and what is not.
      *  Workers write these and nothing watched them until the operator asked how
      *  they were supposed to know what they were waiting on. */
@@ -1017,6 +1084,16 @@ export type ConsoleState = {
   workspaces?: string[];
   repoPath: string;
   pollError: string | null;
+  /** A read that worked, but not the way it usually does — the merged-PR list
+   *  answering off REST after GraphQL refused it. Optional for the same reason
+   *  `workspaces` is — a rebuilt bundle can be talking to a server that has not
+   *  restarted. */
+  pollNote?: string | null;
+  /** Whether to say that in the warning register. A whole fallback read is a
+   *  fact and renders quiet; a SHORT one is a warning, because rows below it
+   *  have gone to "cannot say where its PR stands". Absent on an older server,
+   *  which reads as quiet — the register it had for every note it could send. */
+  pollNoteWarn?: boolean;
   /** When GitHub was last read, or null before the first poll finished. Shown
    *  beside Refresh — 15-minute-old data must never look live. */
   lastPolledAt: string | null;

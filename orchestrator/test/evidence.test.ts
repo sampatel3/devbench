@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseEvidence, resolveEvidencePath, EVIDENCE_ROOT } from '../src/evidence.js';
+import { parseEvidence, readEvidence, evidenceWarning, resolveEvidencePath, EVIDENCE_ROOT } from '../src/evidence.js';
 
 describe('parseEvidence — the manifest inside .gate.json', () => {
   it('keeps well-formed items', () => {
@@ -35,14 +35,9 @@ describe('parseEvidence — the manifest inside .gate.json', () => {
     expect(parseEvidence('nope')).toEqual([]);
   });
 
-  it('drops items missing a path or with a non-string caption', () => {
-    const items = parseEvidence([
-      { kind: 'sql', caption: 'no path' },
-      { kind: 'sql', path: 'docs/issue-pipeline/plans/qa-1/a.txt', caption: 42 },
-      { kind: 'sql', path: 'docs/issue-pipeline/plans/qa-1/b.txt', caption: 'ok' },
-    ]);
-    expect(items).toHaveLength(1);
-    expect(items[0]!.path).toBe('docs/issue-pipeline/plans/qa-1/b.txt');
+  it('drops an entry with no path at all — there is nothing there to show', () => {
+    const items = parseEvidence([{ kind: 'sql', caption: 'no path' }, { kind: 'sql', path: '', caption: 'empty' }]);
+    expect(items).toEqual([]);
   });
 
   it('defaults an unknown kind to report, never trusts it blindly', () => {
@@ -57,6 +52,108 @@ describe('parseEvidence — the manifest inside .gate.json', () => {
       { kind: 'sql', path: '../../../etc/passwd', caption: 'nope' },
     ]);
     expect(items.map((i) => i.path)).toEqual(['docs/issue-pipeline/plans/qa-1/ok.txt']);
+  });
+});
+
+/**
+ * THE 130 THAT VANISHED.
+ *
+ * Read across 13 live worktrees this parser was dropping 130 entries: 100 bare
+ * strings, 18 objects whose only fault was a missing caption, and 2 paths
+ * outside the plans root. #4698 stopped at Gate C with twelve real screenshots
+ * on disk, an empty evidence box on the card, and an approval given without
+ * them. Everything recoverable is now coerced; the rest leaves with a reason.
+ */
+describe('parseEvidence — coercion, because a container is not the content', () => {
+  it('reads a bare string as the path it obviously is — the 100-entry case', () => {
+    const items = parseEvidence([
+      'docs/issue-pipeline/plans/qa-4698/s1-after.png',
+      'docs/issue-pipeline/plans/qa-4698/rows.sql',
+      'docs/issue-pipeline/plans/qa-4698/notes.md',
+    ]);
+    expect(items).toEqual([
+      { kind: 'screenshot', path: 'docs/issue-pipeline/plans/qa-4698/s1-after.png', caption: '', isImage: true },
+      { kind: 'sql', path: 'docs/issue-pipeline/plans/qa-4698/rows.sql', caption: '', isImage: false },
+      { kind: 'report', path: 'docs/issue-pipeline/plans/qa-4698/notes.md', caption: '', isImage: false },
+    ]);
+  });
+
+  it('keeps an entry whose only fault is a missing caption — the picture beats the sentence about it', () => {
+    const items = parseEvidence([
+      { kind: 'screenshot', path: 'docs/issue-pipeline/plans/qa-1/a.png' },
+      { kind: 'sql', path: 'docs/issue-pipeline/plans/qa-1/b.txt', caption: 42 },
+    ]);
+    expect(items.map((i) => [i.path, i.caption])).toEqual([
+      ['docs/issue-pipeline/plans/qa-1/a.png', ''],
+      ['docs/issue-pipeline/plans/qa-1/b.txt', ''],
+    ]);
+  });
+
+  it('keeps a declared kind over the one the extension implies', () => {
+    // Inference only fills a gap; it never overrules the worker.
+    const items = parseEvidence([{ kind: 'transcript', path: 'docs/issue-pipeline/plans/qa-1/run.png' }]);
+    expect(items[0]!.kind).toBe('transcript');
+    expect(items[0]!.isImage).toBe(true); // …and how it RENDERS is still the extension's call
+  });
+
+  it('never throws, whatever the worker writes', () => {
+    for (const junk of [null, 7, [null], [7], [[]], [{}], ['']]) {
+      expect(() => parseEvidence(junk)).not.toThrow();
+    }
+  });
+});
+
+describe('readEvidence — what it refused, and why', () => {
+  it('says nothing when it kept everything', () => {
+    const { items, dropped } = readEvidence(['docs/issue-pipeline/plans/qa-1/a.png']);
+    expect(items).toHaveLength(1);
+    expect(dropped).toEqual([]);
+    expect(evidenceWarning(dropped)).toBeNull();
+  });
+
+  /**
+   * THE FENCE IS NOT WEAKENED — it is made audible. `isUnderPlansRoot` refuses
+   * exactly what it always refused; the change is that the refusal now leaves
+   * with the path attached instead of vanishing into an empty box.
+   */
+  it('REFUSES a path outside the plans root, loudly, and never returns it as an item', () => {
+    const { items, dropped } = readEvidence([
+      { kind: 'sql', path: 'docs/issue-pipeline/plans/qa-1/ok.txt', caption: 'c' },
+      { kind: 'screenshot', path: 'src/secrets.ts', caption: 'nope' },
+      '../../../etc/passwd',
+    ]);
+    expect(items.map((i) => i.path)).toEqual(['docs/issue-pipeline/plans/qa-1/ok.txt']);
+    expect(dropped).toEqual([
+      { path: 'src/secrets.ts', reason: `outside ${EVIDENCE_ROOT}/` },
+      { path: '../../../etc/passwd', reason: `outside ${EVIDENCE_ROOT}/` },
+    ]);
+    expect(evidenceWarning(dropped)).toBe(
+      `2 evidence entries could not be shown — outside ${EVIDENCE_ROOT}/ (src/secrets.ts); ` +
+        `outside ${EVIDENCE_ROOT}/ (../../../etc/passwd)`,
+    );
+  });
+
+  it('an absolute path is outside the tree, coerced or not', () => {
+    const { items, dropped } = readEvidence(['/etc/passwd', { path: '/Users/operator/.ssh/id_rsa', caption: 'x' }]);
+    expect(items).toEqual([]);
+    expect(dropped.map((d) => d.path)).toEqual(['/etc/passwd', '/Users/operator/.ssh/id_rsa']);
+  });
+
+  it('names an entry with no path at all rather than counting it as evidence', () => {
+    const { items, dropped } = readEvidence([{ kind: 'sql', caption: 'no path' }, 42, null]);
+    expect(items).toEqual([]);
+    expect(dropped).toEqual([
+      { path: '', reason: 'no path' },
+      { path: '', reason: 'no path' },
+      { path: '', reason: 'no path' },
+    ]);
+    expect(evidenceWarning(dropped)).toBe('3 evidence entries could not be shown — no path; no path; no path');
+  });
+
+  it('counts one as one — the line is read by a person', () => {
+    expect(evidenceWarning([{ path: 'src/x.png', reason: 'outside docs/issue-pipeline/plans/' }])).toBe(
+      '1 evidence entry could not be shown — outside docs/issue-pipeline/plans/ (src/x.png)',
+    );
   });
 });
 

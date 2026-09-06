@@ -12,9 +12,11 @@ import {
   listOpenPrs,
   listRecentMergedPrs,
   readBlockedNote,
+  type ActionsPayload,
   type GhBlockedNote,
   type GhIssue,
   type GhIssueFacts,
+  type MergedPrsFallback,
 } from './gh.js';
 import {
   EMPTY_WATCH_STATE,
@@ -53,6 +55,7 @@ import {
   type SpawnInfo,
 } from './worker.js';
 import { commandLines, decideReattach, pidAlive } from './reattach.js';
+import { parseGithubSnapshot, serializeGithubSnapshot } from './snapshot.js';
 import { decideDetached } from './detached.js';
 import {
   answeredEntries,
@@ -86,6 +89,13 @@ import {
   type QaSnapshot,
 } from './rework.js';
 import type { ManualQa, ManualQaStep } from './manual-qa.js';
+import {
+  captureGateShots,
+  playwrightDriver,
+  systemListens,
+  type CaptureDeps,
+  type CaptureReport,
+} from './capture.js';
 import type { EvidenceItem } from './evidence.js';
 import {
   ACCOUNT_NAME_RE,
@@ -120,7 +130,7 @@ import {
 } from './metrics.js';
 import { parseIssueState } from './state.js';
 import { handoverBlock } from './handover.js';
-import { appendGateProvenance, parseGateHistory } from './history.js';
+import { appendGateHistory, appendGateProvenance, parseGateHistory } from './history.js';
 import { ciNote } from './summary.js';
 import {
   etDayRange,
@@ -149,7 +159,15 @@ import {
 import { resolveEvidencePath } from './evidence.js';
 import { commentRequestKey, commentTarget, postTargetComment, detectReply, type GhWriteExec } from './comment.js';
 import { commentAddressee } from './addressee.js';
-import { appendDecision, readDecisions, gatesPassedFor, codeSince, type GateDecision } from './decisions.js';
+import {
+  appendDecision,
+  readDecisions,
+  gatesPassedFor,
+  codeSince,
+  saidInTheApproveBox,
+  sentBackByTheConsole,
+  type GateDecision,
+} from './decisions.js';
 import { decideSupercharge } from './supercharge.js';
 import {
   legsOf,
@@ -173,8 +191,9 @@ import { auditIssues, type AuditReport } from './audit.js';
 import { reviewOutstanding, detectChangeRequest, isActionable, nextRound, resolveRound } from './review.js';
 import { viewIssueComments, listPrReviews, listClosedIssues, listMergedPrs, listAuthoredOpenPrs, readBoardItem } from './gh.js';
 import { fetchActionsOnMe, readGraphqlQuota } from './gh.js';
-import { deriveActions, uatFailFor, EMPTY_FEED, type Action, type ActionsFeed } from './actions.js';
-import { quotaBrake, staleBanner } from './quota.js';
+import { deriveActions, newestUatVerdict, uatFailFor, EMPTY_FEED, type Action, type ActionsFeed } from './actions.js';
+import { closeLine, recordCloses, type CloseVerdict, type ClosedSighting } from './close-verdict.js';
+import { fallbackBanner, quotaBrake, staleBanner } from './quota.js';
 import {
   WRITE_FENCE_HOOK,
   assertCodexHooksReady,
@@ -206,6 +225,7 @@ import type {
   ConsoleState,
   DevServerStop,
   EdgeReclaim,
+  GateFile,
   GateLetter,
   GateReopening,
   IssueRow,
@@ -255,13 +275,23 @@ export type OrchestratorDeps = {
   restartContainer?: (name: string) => Promise<string>;
   log?: (line: string) => void;
   /** The watcher's three reads. Inert under vitest unless a test wires them, for
-   *  the same reason as everything else here: measuring the operator's real
-   *  machine from a test is one short step from ACTING on it. */
+   *  the same reason as everything else here: measuring the operator's real machine
+   *  from a test is one short step from ACTING on it. */
   watchProbes?: WatchProbes;
   /** SIGSTOP / SIGCONT to a whole process group — the only way a pause happens.
    *  It THROWS under vitest unless wired, identical to the `kill` rule: no
    *  process may be signalled from a test that has not wired one. */
   signalGroup?: (pgid: number, signal: 'SIGSTOP' | 'SIGCONT') => void;
+  /**
+   * The screenshot runner's browser and its port probe.
+   *
+   * The fourth machine capability, and it follows the same rule as the other
+   * three: under vitest it falls back to "not there" rather than to the real
+   * thing, so a test that has not deliberately wired a browser cannot launch
+   * one against whatever happens to be listening on the operator's machine. See
+   * the constructor.
+   */
+  captureDeps?: CaptureDeps;
 };
 
 /**
@@ -282,9 +312,9 @@ const PEAK_SAVE_DELTA_BYTES = 256 * 1024 * 1024;
  * `WorkerRunner`, so the runner stays a dumb transport and the one place that
  * decides what a worker is told is the one place to look.
  *
- * It must never touch a resume: resume prompts are the operator's own words,
- * gate history records them verbatim, and a byte-exactness test proves nothing
- * is appended.
+ * It must never touch a resume: resume prompts are the operator's own words, gate
+ * history records them verbatim, and a byte-exactness test proves nothing is
+ * appended.
  */
 export const FANOUT_RULE =
   'Hard rule for this machine: never run jest or vitest uncapped — cap with --maxWorkers=2 (see issue-pipeline Stage 4).';
@@ -294,7 +324,7 @@ export const FANOUT_RULE =
  * as the fan-out rule. A skill governs a round only if the worker is told to
  * apply it: the folder is offered as a reference shelf, and a shelf is something
  * a model reads when it happens to think of it. Fresh spawns only — a resume
- * must stay the operator's words, byte-exact.
+ * must stay byte-exact the operator's words.
  *
  * It names the two skills that always apply rather than saying "apply your
  * skills", because a rule with no subject is one a worker can satisfy by doing
@@ -317,11 +347,12 @@ export const FANOUT_RULE =
  */
 export const SKILLS_RULE =
   'Standing rule: your skills are binding, not a reference shelf. Before you start, and again at every gate, ' +
-  'apply every skill whose description covers what you are about to do. Two always do: `issue-pipeline` governs ' +
-  'the round itself, and `google-dev-writing` — the whole Google developer documentation style guide — governs ' +
-  'every piece of prose you write for a person to read: gate summaries and questions, PR bodies, drafted ' +
-  'comments and issues, status posts and handovers. Apply `google-dev-writing` to every word first, then ' +
-  "`issue-pipeline`'s \"How to write\" section on top, and where the two disagree `issue-pipeline` wins. " +
+  'apply every skill whose description covers what you are about to do. Two always do: `issue-pipeline` ' +
+  'governs the round itself, and `google-dev-writing` — the whole Google developer documentation style ' +
+  'guide — governs every piece of prose you write for a person to read: gate summaries and questions, PR ' +
+  'bodies, drafted comments and issues, status posts and handovers. Apply `google-dev-writing` to every ' +
+  "word first, then `issue-pipeline`'s \"How to write\" section on top, and where the two disagree " +
+  '`issue-pipeline` wins. ' +
   '`google-dev-writing` never applies to code, identifiers, command output or quoted material, and accuracy ' +
   'always wins over any skill.';
 
@@ -405,9 +436,8 @@ type Persisted = {
    */
   endedWithoutGate: Record<string, string>;
   /**
-   * SUPERCHARGED RUNS, per issue — the operator's standing instruction, given
-   * once at start, to pass gates A, B and C on this issue without waiting for
-   * them.
+   * SUPERCHARGED RUNS, per issue — a standing instruction from the operator,
+   * given once at start, to pass gates A, B and C without waiting for them.
    *
    * PERSISTED, and that is not incidental: the console going down mid-run is
    * routine and is now one click (Rebuild), and a flag lost across a restart
@@ -424,8 +454,8 @@ type Persisted = {
   /**
    * Why a supercharged run handed itself back, per issue.
    *
-   * An automatic run that stops owes them one sentence saying why, and the gate
-   * card alone cannot say it: the card shows the gate, not the fact that the
+   * An automatic run that stops owes the operator one sentence saying why, and the
+   * gate card alone cannot say it: the card shows the gate, not the fact that the
    * console had been passing gates until this one. Cleared when it is started again.
    */
   superchargeStopped: Record<string, string>;
@@ -446,9 +476,9 @@ type Persisted = {
    */
   parked: Record<string, ParkedStamp>;
   /** a gate decision the operator has already made, taken while every slot was
-   *  busy and held until one frees. It is here rather than in memory for the
-   *  same reason as everything else in this file: a decision a person made must
-   *  not die because a process restarted */
+   *  busy and held until one frees. It is here rather than in memory for the same
+   *  reason as everything else in this file: a decision a person made must not
+   *  die because a process restarted */
   pendingResume: Record<string, string>;
   /**
    * Which of those parked things is a SEND-BACK rather than an approval.
@@ -470,13 +500,13 @@ type Persisted = {
   /**
    * Held resumes that a SUPERCHARGED run produced, per issue.
    *
-   * Exactly parallel to `sentBackResumes` beside it, and for the same reason. A
-   * supercharged pass that arrives at capacity is held in `pendingResume` and
+   * Exactly parallel to `sentBackResumes` beside it, and for the same reason.
+   * A supercharged pass that arrives at capacity is held in `pendingResume` and
    * replayed later by `#dispatch`, which is the only party that writes the
    * ledger line for it — and it had no way of knowing the console had produced
    * those words rather than the operator. The result was that with two slots and
-   * four supercharged issues, every pass that waited was recorded as one HE
-   * made, which is the precise confusion `by: 'supercharge'` exists to prevent.
+   * four supercharged issues, every pass that waited was recorded as one THEY made,
+   * which is the precise confusion `by: 'supercharge'` exists to prevent.
    * Consumed where the message is.
    */
   superchargeResumes: Record<string, true>;
@@ -487,8 +517,8 @@ type Persisted = {
   /**
    * Spin-off issues filed from this console, per parent issue.
    *
-   * The operator asked that whatever files the issue also record the link back
-   * to its parent. The prefilled-URL route could never do that — a browser form
+   * The operator asked that whatever files the issue also update the status by
+   * linking it. The prefilled-URL route could never do that — a browser form
    * hands the new number to GitHub and to nobody else, so the console never
    * learned it and parent and child stayed strangers. Filed here, both numbers
    * are in hand at the same moment, and this is where the link lives.
@@ -514,20 +544,47 @@ type Persisted = {
    *  was ever delivered, exists nowhere else */
   gateThreads: Record<string, GateThreadRecord>;
   /** The operator's own per-step QA ticks at gate C, per issue. Append-only, and
-   *  here rather than in `.gate.json` for the reason that decides everything
-   *  about this feature: the worker rewrites that file whole on every stop, and
-   *  a verdict a person gave must not be at the mercy of a process rewriting a
+   *  here rather than in `.gate.json` for the reason that decides everything about
+   *  this feature: the worker rewrites that file whole on every stop, and a
+   *  verdict a person gave must not be at the mercy of a process rewriting a
    *  file. No worker can write state.json — see qa-verdict.ts */
   qaVerdicts: Record<string, QaVerdict[]>;
   /** What the gate held the moment a targeted rework went out: the evidence and
    *  the click-script. The verification baseline and the render fallback, so
-   *  nothing the operator has already seen can vanish because a worker fumbled a
-   *  merge */
+   *  nothing the operator has seen can vanish because a worker fumbled a merge */
   qaSnapshots: Record<string, QaSnapshot>;
   /** Every targeted rework dispatched for an issue, in order. Append-only on
    *  the same principle as `reopenings`: a round that went back to Build is a
    *  fact about the work */
   qaReworks: Record<string, QaReworkEntry[]>;
+  /**
+   * The last screenshot capture run per issue, and the gate round it ran for.
+   *
+   * `gateHash` is what makes the automatic run happen ONCE per round rather than
+   * once per poll — the same discriminator `#autoDecideSuperchargedGates` uses,
+   * for the same reason. It is persisted rather than held in memory because a
+   * console restart must not re-drive a browser over a gate it already captured.
+   *
+   * The report itself lives here too, so the card can say what the last run did
+   * — including that it failed, and why — without the console having to run it
+   * again to find out.
+   */
+  captures: Record<string, CaptureReport & { gateHash: string | null }>;
+  /**
+   * What QA had said the first time the console saw each issue CLOSED.
+   *
+   * Record-once and never rewritten, which is the whole point: a `Pass` posted
+   * after the close must not make the close look verified in hindsight, and a
+   * ticket closed over a standing `Fail` goes on saying so. Persisted for the
+   * same reason `boardMoves` and `reopenings` are — it is a fact about the
+   * ticket, not current state, and rebuilding it from a later poll would answer
+   * a different question.
+   *
+   * An issue the console could not read a verdict for gets NO entry. Absence is
+   * "never established"; `none` means it looked and there was nothing. See
+   * `close-verdict.ts`.
+   */
+  closeVerdicts: Record<string, CloseVerdict>;
 };
 
 /**
@@ -547,8 +604,7 @@ type NotifyStore = {
   /** Issues already known to be assigned to them — so an existing row is a row,
    *  not news. Seeded from the first payload. */
   knownAssigned: number[];
-  /** When the operator last said "seen". Retires tier 2–3 news; tier 1 ignores
-   *  it. */
+  /** When the operator last said "seen". Retires tier 2–3 news; tier 1 ignores it. */
   seenAt: string | null;
   /** The last good feed, so a restart shows it immediately — stamped with its
    *  REAL age, never with the restart time. */
@@ -598,6 +654,8 @@ const EMPTY: Persisted = {
   qaVerdicts: {},
   qaSnapshots: {},
   qaReworks: {},
+  captures: {},
+  closeVerdicts: {},
 };
 
 /**
@@ -610,6 +668,21 @@ const EMPTY: Persisted = {
 const GATE_STAGE: Record<GateLetter, number> = { A: 1, B: 2, C: 5, D: 6, E: 8 };
 
 const GATE_LETTERS = Object.keys(GATE_STAGE) as GateLetter[];
+
+/**
+ * A capture record as the ROW carries it — the report, without the round key it
+ * is filed under.
+ *
+ * `gateHash` is the console's own bookkeeping for "have I already captured this
+ * round", and it is dropped here on the standing rule that the wire carries what
+ * the card renders. Nothing in the page has any use for it, and a field on the
+ * row is a field somebody will eventually read.
+ */
+const captureOf = (record: (CaptureReport & { gateHash: string | null }) | undefined): CaptureReport | null => {
+  if (!record) return null;
+  const { gateHash: _key, ...report } = record;
+  return report;
+};
 
 /**
  * What we knew when a run STARTED, kept so the run can be measured when it ends.
@@ -722,6 +795,35 @@ export class Orchestrator extends EventEmitter {
   #resources: ResourceReport | null = null;
   #dispatchReason = 'starting up';
   #pollError: string | null = null;
+  /**
+   * A read that SUCCEEDED, but not the way it usually does.
+   *
+   * Separate from `#pollError` because it is a different sentence: a fallback
+   * that worked is not a failed read, and leaving the operator with a failure
+   * banner over a board that is entirely correct is its own kind of 2026-09-05.
+   */
+  #pollNote: string | null = null;
+  /**
+   * Which colour that sentence is in — and it is not always the same one.
+   *
+   * A WHOLE fallback read renders quiet, like the "GitHub read HH:MM" stamp: a
+   * fact about the data, nothing to act on. A CAPPED one renders `warn`, because
+   * the map is short and rows below it have gone to "cannot say where its PR
+   * stands"; styling that like furniture is how the one poll worth acting on
+   * gets skimmed past. Decided here rather than in the page, because whether a
+   * read is worth acting on is a fact about the read.
+   */
+  #pollNoteWarn = false;
+  /**
+   * The last poll lost a PR list AND had no map of its own to fall back on, so
+   * no row may say "there is no pull request" until one succeeds.
+   *
+   * `false` before the first poll on purpose: an unread console is not a
+   * console that failed to read, and every row is `no-worker` at that point
+   * anyway. Set once per poll and read by every `#row`, so the rows built
+   * between polls all describe the same read. See `prsUnreadable` in status.ts.
+   */
+  #prsUnreadable = false;
   /** When GitHub was last read. On screen beside Refresh, because at a fifteen
    *  minute cadence a number with no age on it is a number that looks live. */
   #lastPolledAt: string | null = null;
@@ -730,11 +832,10 @@ export class Orchestrator extends EventEmitter {
   #actions: ActionsFeed = { ...EMPTY_FEED };
   /** Reentrancy guard for the board-move pass — it writes, so it runs alone. */
   #applyingBoard = false;
-  /** Every gate decision the operator has made, read once at boot and appended
-   *  to. */
+  /** Every gate decision the operator has made, read once at boot and appended to. */
   #decisions: GateDecision[] = [];
   /**
-   * Per issue: a question of the operator's on that thread that nobody has answered.
+   * Per issue: a question of the operator's on that thread that nobody answered.
    * Derived from comments the actions poll already fetches and otherwise throws
    * away — #4344 carried one for fifteen hours with nothing on the page to say so.
    */
@@ -793,8 +894,8 @@ export class Orchestrator extends EventEmitter {
   /** Set while a container restart is actually in flight. The restart takes ~12s,
    *  and nothing may be started into the middle of it. */
   #reclaiming = false;
-  /** The last edge-runtime restart the operator asked for, for the banner. In memory
-   *  only: it is feedback on a click, not state anything depends on. */
+  /** The last edge-runtime restart the operator asked for, for the banner. In
+   *  memory only: it is feedback on a click, not state anything depends on. */
   #lastEdgeReclaim: EdgeReclaim | null = null;
   /** The daily router-readiness snapshot job. */
   #metricsTimer: NodeJS.Timeout | null = null;
@@ -802,6 +903,9 @@ export class Orchestrator extends EventEmitter {
    *  same re-entrancy guard `#polling` uses. */
   #watchProbes: WatchProbes;
   #signalGroup: (pgid: number, signal: 'SIGSTOP' | 'SIGCONT') => void;
+  /** The screenshot runner's browser and port probe. Never real under vitest
+   *  unless a test wired one — see the constructor. */
+  #captureDeps: CaptureDeps;
   #watch: WatchSample | null = null;
   #watchState: WatchState = { ...EMPTY_WATCH_STATE };
   #watchTimer: NodeJS.Timeout | null = null;
@@ -821,10 +925,10 @@ export class Orchestrator extends EventEmitter {
     // touch it. This is a structural rule and not a convention because it has
     // already gone wrong once: back when the console restarted the edge runtime
     // by itself, a test that let the real `probeResources` run measured the real
-    // container, decided it was fat, and restarted the operator's actual
-    // container while a worker was live. So, under vitest, each of the three
-    // machine capabilities falls back to "not there" rather than to the real
-    // thing, per capability, and a test that wires one gets exactly that one.
+    // container, decided it was fat, and restarted the operator's own container
+    // while a worker was live. So, under vitest, each of the three machine
+    // capabilities falls back to "not there" rather than to the real thing, per
+    // capability, and a test that wires one gets exactly that one.
     const underTest = Boolean(process.env.VITEST);
     this.#instanceProbes = deps.instanceProbes ?? (underTest ? inertProbes : undefined);
     this.#kill =
@@ -849,6 +953,16 @@ export class Orchestrator extends EventEmitter {
             throw new Error('no process group may be signalled from a test that has not wired one');
           }
         : signalProcessGroup);
+    // The fourth capability, same rule as the three above: a browser is a
+    // process on the operator's machine pointed at whatever listens on a port, and a
+    // test that has not asked for one gets a refusal it can read rather than a
+    // real Chromium against a real dev server.
+    this.#captureDeps = deps.captureDeps ?? {
+      open: underTest
+        ? () => Promise.reject(new Error('no browser may be launched from a test that has not wired one'))
+        : playwrightDriver({ storageState: cfg.qaStorageState }),
+      listens: underTest ? async () => false : systemListens,
+    };
     this.#log = deps.log ?? ((line) => console.log(line));
     // Until start() reads accounts.json we assume the implicit single account,
     // which is the pre-accounts behaviour.
@@ -871,8 +985,8 @@ export class Orchestrator extends EventEmitter {
       providers: this.#providers,
       streamDir: cfg.streamDir,
       pollMs: cfg.streamPollMs,
-      // So the fence can ask whether the operator approved gate D before `gh pr
-      // create`.
+      // So the fence can ask whether the operator approved gate D before
+      // `gh pr create`.
       decisionsFile: cfg.decisionsFile,
       onChange: () => this.#changed(),
       onSpawn: (info) => this.#registerRun(info),
@@ -899,13 +1013,19 @@ export class Orchestrator extends EventEmitter {
   async start(): Promise<{ reattached: number[]; reconciled: number[] }> {
     this.#stopped = false;
     this.#persisted = await this.#load();
+    // The last successful poll's GitHub reading, back into memory BEFORE the
+    // first poll — so if that poll fails (the 2026-09-05 restart landed in an
+    // hour of exhausted quota), its fallbacks keep this instead of an empty
+    // process and the board shows the old statuses under the old "GitHub read"
+    // stamp rather than degrading every row to a bare checkpoint. See snapshot.ts.
+    await this.#seedFromSnapshot();
     // The decision ledger, read once. Append-only, so memory and file stay in step.
     this.#decisions = await readDecisions(this.#cfg.decisionsFile);
     await this.#ensureNotifyLoaded();
     // The queue itself is memory, so a decision the operator made before the
-    // restart has to be put back in line here or it would wait for a dispatch
-    // that never comes. This is the whole reason the message is on disk in the
-    // first place.
+    // restart has to be put back in line here or it would wait for a dispatch that
+    // never comes. This is the whole reason the message is on disk in the first
+    // place.
     for (const key of Object.keys(this.#persisted.pendingResume)) this.#queue.enqueue(Number(key));
     this.#accounts = await loadAccounts(this.#cfg.accountsFile, { canonical: this.#cfg.canonicalConfigDir });
     const picked = await this.#reattachAll();
@@ -947,8 +1067,8 @@ export class Orchestrator extends EventEmitter {
     this.#stopped = true;
     if (this.#watchTimer) clearTimeout(this.#watchTimer);
     this.#watchTimer = null;
-    // A PAUSED worker is left paused. Un-pausing is the operator's click and nothing
-    // else's — a console shutdown quietly resuming everything would be the
+    // A PAUSED worker is left paused. Un-pausing is the operator's click and
+    // nothing else's — a console shutdown quietly resuming everything would be the
     // console acting on the machine while nobody was looking, which is the one
     // thing this whole feature is built not to do. The `paused` stamp is on its
     // runningRuns row, so it comes back reading paused.
@@ -1108,8 +1228,7 @@ export class Orchestrator extends EventEmitter {
     const scanGeneration = ++this.#scanGeneration;
     try {
       /**
-       * Every GITHUB read that fell back to its previous value, in the
-       * operator's words.
+       * Every GITHUB read that fell back to its previous value, in plain words.
        *
        * Only `listIssues` used to say anything. `listOpenPrs` and
        * `listRecentMergedPrs` swallowed the error and returned the last good
@@ -1126,6 +1245,35 @@ export class Orchestrator extends EventEmitter {
        */
       const failed: string[] = [];
       const why = (e: Error): string => e.message.split('\n')[0] ?? 'no reason given';
+      // Per-list, because the fallback each one takes is only as good as the map
+      // it falls back ON. See `#prsUnreadable`.
+      let openFailed = false;
+      let mergedFailed = false;
+      /**
+       * Set when GraphQL refused the merged-PR read and REST answered it
+       * instead, and it is TWO different polls wearing one name.
+       *
+       * A whole REST read is not a failure: the map is full, every row below
+       * knows where its PR stands, so it never joins `failed`, never sets
+       * `mergedFailed`, and never makes a row say "we could not look". It gets a
+       * quiet line, because a console running on its second road should say so
+       * while it still has one.
+       *
+       * A CAPPED one is a read that did not finish. The map holds the newest
+       * merges and is short at the old end, and nothing downstream can tell a
+       * branch that is missing from a branch that never merged — which is the
+       * whole 2026-09-05 mechanism, reached this time through a success rather
+       * than a refusal. So `capped` goes into `#prsUnreadable` below and the
+       * banner goes to `warn`.
+       *
+       * A HOLDER rather than a `let`, because the assignment happens inside the
+       * `onFallback` closure: TypeScript's control-flow analysis narrows a `let`
+       * to its initialiser at every use site past a closure it only PASSED
+       * (TS#9998), so `mergedViaRest.capped` would be a property access on
+       * `never`. A field on an object is not narrowed that way, so the compiler
+       * checks the read the poll actually makes.
+       */
+      const merged: { viaRest: MergedPrsFallback | null } = { viaRest: null };
       const [issues, openPrs, mergedPrs, scans, resources] = await Promise.all([
         listIssues(this.#cfg.repo, this.#cfg.assignee).catch((e: Error) => {
           failed.push(`gh issue list failed: ${why(e)}`);
@@ -1133,13 +1281,19 @@ export class Orchestrator extends EventEmitter {
         }),
         listOpenPrs(this.#cfg.repo).catch((e: Error) => {
           failed.push(`gh pr list (open) failed: ${why(e)}`);
+          openFailed = true;
           return this.#openPrs;
         }),
         // One extra read-only list per poll. A failure keeps the LAST merged map
         // rather than emptying it: a flaky network must not resurrect the
         // "checkpoint — stopped after stage 7" lie mid-session.
-        listRecentMergedPrs(this.#cfg.repo, this.#cfg.assignee).catch((e: Error) => {
+        listRecentMergedPrs(this.#cfg.repo, this.#cfg.assignee, {
+          onFallback: (note) => {
+            merged.viaRest = note;
+          },
+        }).catch((e: Error) => {
           failed.push(`gh pr list (merged) failed: ${why(e)}`);
+          mergedFailed = true;
           return this.#mergedPrs;
         }),
         this.#scanWorktreesFromDisk().catch(() => this.#scans),
@@ -1150,16 +1304,76 @@ export class Orchestrator extends EventEmitter {
           workerHeadroomBytes: this.#cfg.workerHeadroomBytes,
         }),
       ]);
-      this.#pollError = failed[0] ?? null;
+      // EVERY failed read, not just the first.
+      //
+      // `failed[0]` was the whole banner, so a poll that lost two lists named
+      // one of them and hid the rest. On 2026-09-05 that sent an hour of
+      // debugging at the wrong read: the banner named a read that was
+      // incidental and said nothing about the merged-PR query that was actually
+      // being rejected — the one every broken row hung off. Which reads are down
+      // IS the diagnosis. Still one finished string — the page composes nothing
+      // — and still one line, because the banner is one line.
+      this.#pollError =
+        failed.length === 0
+          ? null
+          : failed.length === 1
+            ? failed[0]!
+            : `${failed.length} GitHub reads failed this poll — ${failed.join('; ')}`;
+      // THE READ THAT WORKED THE OTHER WAY, in its own words. It says which road
+      // answered, why the usual one did not, and how much it came back with —
+      // and it admits the one thing REST paging can lose. Composed here, like
+      // every other banner, so the page renders a finished string; its register
+      // is composed here too, because whether a fallback is worth acting on is a
+      // fact about the read, not a styling choice for the page to make.
+      const note = fallbackBanner(merged.viaRest);
+      this.#pollNote = note?.text ?? null;
+      this.#pollNoteWarn = note?.warn ?? false;
       this.#issues = issues;
       this.#openPrs = openPrs;
       this.#mergedPrs = mergedPrs;
+      // WHETHER A ROW MAY STILL SAY "no PR" THIS POLL.
+      //
+      // The two PR reads fall back to their previous map, which is right while
+      // there IS one and useless the moment there is not: after a restart both
+      // maps start empty, so a rejected query turns "we could not look" into
+      // "there is no pull request" for every row at once. That is the 2026-09-05
+      // incident — 21 merged PRs erased, 21 rows reading "stopped after stage 8".
+      //
+      // Per list and not on the merged `#prs`, because a row's PR could be in
+      // either one: an unreadable OPEN list with an empty fallback hides an open
+      // PR just as completely, even if the merged list answered.
+      //
+      // AND A CAPPED REST READ COUNTS, with no `size === 0` beside it. The two
+      // failure cases above are guarded on an empty map because a failed read
+      // over a map we already hold is the case the fallback was written for —
+      // the previous answer is still the best answer. A capped read is a
+      // different animal: it is THIS poll's answer, it is short by construction,
+      // and no size tells you whether the branch you are asking about is one of
+      // the ones it never reached. Read 900 merges and miss the one a worktree
+      // is waiting on and the row reverts to "checkpoint — stopped after stage
+      // 8", which is verbatim the sentence this whole branch exists to delete.
+      // A short read is a read we could not complete, and rows say so.
+      this.#prsUnreadable =
+        (openFailed && openPrs.size === 0) ||
+        (mergedFailed && mergedPrs.size === 0) ||
+        merged.viaRest?.capped === true;
       // OPEN wins on a branch collision. Branches get reused: a new open PR on a
       // branch whose previous PR merged is the live one, and showing the merged
       // one would send the row to stage 9 while a review is still running.
       this.#prs = new Map([...mergedPrs, ...openPrs]);
       const enrichedScans = await this.#withProviderActivity(scans);
       if (scanGeneration === this.#scanGeneration) this.#scans = enrichedScans;
+      // THE SCREENSHOTS, BEFORE ANYTHING RENDERS THE CARD. It is here — first
+      // thing after the scan and before every read that depends on it — because
+      // this is the poll that `#track` fires the moment a worker parks at gate
+      // C, and the whole point is that the first card the operator sees already
+      // has the pictures on it rather than a warning asking for the work to be
+      // sent back for them. It stamps `.gate.json`, so a run that wrote anything is
+      // followed by a fresh scan: everything below reads the stamped file.
+      if (await this.#captureMissingShots()) {
+        const restamped = await this.#scanWorktreesFromDisk().catch(() => null);
+        if (restamped) await this.#publishScans(restamped, scanGeneration);
+      }
       // AFTER both lists are in place: which worktrees are orphaned is a question
       // about the two of them together, and asking it against a half-updated pair
       // would read a closed issue for a worktree that has an open one.
@@ -1203,7 +1417,20 @@ export class Orchestrator extends EventEmitter {
       // read 16:44" is a claim about the data on screen; moving it over a read
       // that fell back to the previous value makes hour-old rows look live, and
       // `#pollError` beside it is what says why it has stopped moving.
-      if (failed.length === 0) this.#lastPolledAt = new Date().toISOString();
+      //
+      // A capped REST read still moves it, and that is the right reading of the
+      // stamp rather than an exception to it: the rows on screen WERE read this
+      // minute, they are short and not stale, and freezing the stamp would say
+      // the opposite of the true thing. What is short about them is carried
+      // where shortness belongs — the `warn` banner and the rows that have gone
+      // to "cannot say".
+      if (failed.length === 0) {
+        this.#lastPolledAt = new Date().toISOString();
+        // A GOOD poll, and only a good poll, replaces the startup seed on disk.
+        // Writing on a failed one would restamp old data with a fresher-looking
+        // file; the next restart is owed the last read that actually happened.
+        await this.#saveSnapshot(this.#lastPolledAt);
+      }
       this.#changed();
       await this.#dispatch();
       return true;
@@ -1253,9 +1480,8 @@ export class Orchestrator extends EventEmitter {
    * Retiring is the other half. The thread belongs to ONE gate stop, so it is
    * dropped once a decision has gone out AND the worker has reached its next
    * stop — that is what stops a second round at the same gate letter inheriting
-   * the first round's questions. A thread carrying a violation is kept until it
-   * is genuinely resolved, because the violation IS the thing the operator has
-   * to see.
+   * the first round's questions. A thread carrying a violation is kept until it is
+   * genuinely resolved, because the violation IS the thing the operator has to see.
    */
   async #mergeThreadAnswers(): Promise<void> {
     let dirty = false;
@@ -1315,14 +1541,14 @@ export class Orchestrator extends EventEmitter {
     // the previous scan list on error, and on the very first poll that list is
     // empty — so without this a `git worktree list` that hiccuped once would
     // delete every tick the operator had set by hand. Losing their own
-    // verification to a transient read is the one loss this feature exists to
-    // prevent.
+    // verification to a transient read is the loss this feature exists to prevent.
     if (this.#scans.length === 0) return;
     let dirty = false;
     const keys = new Set([
       ...Object.keys(this.#persisted.qaVerdicts),
       ...Object.keys(this.#persisted.qaSnapshots),
       ...Object.keys(this.#persisted.qaReworks),
+      ...Object.keys(this.#persisted.captures),
     ]);
     for (const key of keys) {
       const issue = Number(key);
@@ -1332,6 +1558,10 @@ export class Orchestrator extends EventEmitter {
         delete this.#persisted.qaVerdicts[key];
         delete this.#persisted.qaSnapshots[key];
         delete this.#persisted.qaReworks[key];
+        // And no gate file the capture record could still be about. It is
+        // bookkeeping, not a fact about the work — unlike `reopenings` and
+        // `spinOffs` beside it, which are kept for ever on purpose.
+        delete this.#persisted.captures[key];
         dirty = true;
         continue;
       }
@@ -1413,8 +1643,8 @@ export class Orchestrator extends EventEmitter {
    * exists" means nothing has happened yet rather than that the worker moved on:
    *
    *  - a DECISION still sitting in `pendingResume` has not been delivered. The
-   *    thread was stamped closed the moment the operator clicked, but at capacity the
-   *    click only parked — so the next poll dropped their question, the worker's
+   *    thread was stamped closed the moment the operator clicked, but at capacity
+   *    the click only parked — so the next poll dropped their question, the worker's
    *    answer and the "superseded before it was answered" stamp before the
    *    decision had even run. That stamp is the whole reason the record is kept
    *    rather than deleted (see GateThreadEntry.supersededAt).
@@ -1425,7 +1655,7 @@ export class Orchestrator extends EventEmitter {
    *    own tail time, between writing a new `.gate.json` and exiting, erased
    *    the evidence a moment before it existed. `#checkAskEnding` then found no
    *    record and said nothing, and a charge-past showed up as an ordinary new
-   *    gate stop. The operator pressing Refresh was enough to enter that window.
+   *    gate stop. Pressing Refresh was enough to enter that window.
    *
    * The in-memory context is checked first and the persisted row second, so this
    * is still right in the seconds after a restart, before contexts are rebuilt.
@@ -1567,7 +1797,7 @@ export class Orchestrator extends EventEmitter {
       let dirty = false;
       if (last && isActionable(last)) {
         const resolved = resolveRound(last, signals, pr.state);
-        if (!resolved) continue; // still the ask the operator is looking at — leave it be
+        if (!resolved) continue; // still the ask the operator is looking at — leave it
         last.resolvedBy = resolved.resolvedBy;
         last.resolvedAt = new Date().toISOString();
         last.resolution = resolved.resolution;
@@ -1687,9 +1917,9 @@ export class Orchestrator extends EventEmitter {
       seenAt: this.#notifyStore.seenAt,
       lookbackMs: this.#cfg.actionsLookbackDays * 86_400_000,
       trackedIssues: new Set(this.#scans.map((s) => s.issue)),
-      // So the console does not report its own board write to the operator as
-      // news. The ProjectV2 change comes back with no actor, indistinguishable
-      // from a person moving the card, unless we remember that it was us.
+      // So the console does not report its own board write to the operator as news. The
+      // ProjectV2 change comes back with no actor, indistinguishable from a person
+      // moving the card, unless we remember that it was us.
       ownBoardMoves: new Map(
         Object.entries(this.#persisted.boardMoves).map(([k, m]) => [Number(k), { to: m.to, at: m.at }]),
       ),
@@ -1704,7 +1934,7 @@ export class Orchestrator extends EventEmitter {
           })
           .map(([key]) => Number(key)),
       ),
-      // The third decay signal: they are fixing it interactively, in a worktree,
+      // The third decay signal: the operator is fixing it interactively, in a worktree,
       // right now. Mirrors resolveRound's "handled outside the console".
       branchActivity: new Map(
         this.#scans
@@ -1712,10 +1942,10 @@ export class Orchestrator extends EventEmitter {
           .map((s) => [s.issue, s.lastActivityAt as string] as const),
       ),
       knownAssigned: new Set(this.#notifyStore.knownAssigned),
-      // The work is already moving without them. Enumerated over the payload
+      // The work is already moving without the operator. Enumerated over the payload
       // rather than kept as a list, so it cannot drift: a worker live or paused
-      // on it, a place in the queue, or a resume they have already authorised and
-      // the console still owes.
+      // on it, a place in the queue, or a resume the operator has already authorised
+      // and the console still owes.
       inFlight: new Set(
         payload.issues
           .map((i) => i.number)
@@ -1727,6 +1957,8 @@ export class Orchestrator extends EventEmitter {
           ),
       ),
     });
+
+    await this.#recordCloseVerdicts(payload, now);
 
     // Every PR that references each issue, kept WHOLE, so a row whose fix was
     // folded into another issue's PR can resolve that PR through the branch map
@@ -1790,6 +2022,56 @@ export class Orchestrator extends EventEmitter {
     // ever raise it again: silently unsubscribed for good.
     this.#notifyStore.feed = this.#actions;
     await this.#saveNotify();
+  }
+
+  /**
+   * WRITE DOWN WHAT QA HAD SAID, at the moment a close is first seen.
+   *
+   * Called from inside `#readActions` and not from `#readOrphanFacts`, though it
+   * is the close half of the same question, because the two halves of the answer
+   * are refreshed in different places and both have to be current:
+   *
+   *  - THE CLOSE comes from `#orphanFacts`, refreshed earlier in this same poll.
+   *    It carries GitHub's own `closedAt`, which the omnibus payload does not,
+   *    and it scopes the record to the issues this console has a worktree for —
+   *    the ones it draws a row for and can therefore say anything about;
+   *  - THE VERDICT comes from the payload in hand right here, through the same
+   *    `newestUatVerdict` the feed uses. Recording from the previous poll's
+   *    derived actions would have missed a verdict and a close landing in one
+   *    window, which is exactly what #4914 did — `Test Result: Fail` and the
+   *    close in the same second.
+   *
+   * An orphan-closed issue the payload does not carry gets NO record. That is
+   * the honest answer and it is a real case: `closedQ` reaches back only
+   * `actionsLookbackDays`, and its 20-row page can be cut short. Absence reads
+   * as "never established" everywhere downstream; `none` is reserved for a look
+   * that found nothing.
+   */
+  async #recordCloseVerdicts(payload: ActionsPayload, now: Date): Promise<void> {
+    const seen = new Map(payload.issues.map((i) => [i.number, i]));
+    const sightings: ClosedSighting[] = [];
+    for (const fact of this.#orphanFacts.values()) {
+      if (fact.state !== 'CLOSED') continue;
+      if (this.#persisted.closeVerdicts[String(fact.number)]) continue; // recorded once, for ever
+      const issue = seen.get(fact.number);
+      if (!issue) continue; // not read this poll — nothing to record, and no guess
+      const v = newestUatVerdict(issue, this.#cfg.assignee);
+      sightings.push({
+        issue: fact.number,
+        closedAt: fact.closedAt,
+        verdict: v ? { verdict: v.verdict, by: v.comment.author.login } : null,
+      });
+    }
+    if (sightings.length === 0) return;
+
+    const { verdicts, added } = recordCloses(this.#persisted.closeVerdicts, sightings, now);
+    if (added.length === 0) return;
+    this.#persisted.closeVerdicts = verdicts;
+    await this.#save();
+    for (const n of added) {
+      const v = verdicts[String(n)]!;
+      this.#log(`#${n}: closed on GitHub. ${closeLine(v)}`);
+    }
   }
 
   /**
@@ -1913,10 +2195,10 @@ export class Orchestrator extends EventEmitter {
    * Two things this cap does in the meantime. It bounds the blast radius of a
    * registration loop, and it bounds the POLL: every registered device costs up
    * to four sequential HTTPS round trips inside `#announce`, and `#polling` is
-   * held shut for all of them. Five is more devices than the operator owns.
+   * held shut for all of them. Five is more devices than one person carries.
    *
-   * An endpoint already registered always wins — the cap must never stop their own
-   * phone refreshing a rotated subscription.
+   * An endpoint already registered always wins — the cap must never stop the
+   * operator's own phone refreshing a rotated subscription.
    */
   async savePushSubscription(sub: PushSubscription): Promise<{ ok: boolean; count: number; message?: string }> {
     await this.#ensureNotifyLoaded();
@@ -2001,8 +2283,8 @@ export class Orchestrator extends EventEmitter {
 
   /**
    * "Seen" retires tier 2–3 news. It deliberately does NOT touch tier 1: a UAT
-   * send-back is a to-do, and a to-do does not disappear because they looked at
-   * it. It clears when GitHub says the fix shipped.
+   * send-back is a to-do, and a to-do does not disappear because the operator
+   * looked at it. It clears when GitHub says the fix shipped.
    */
   async markActionsSeen(): Promise<{ seenAt: string }> {
     await this.#ensureNotifyLoaded();
@@ -2055,11 +2337,10 @@ export class Orchestrator extends EventEmitter {
 
   /** The feed as the page receives it, with its banner already worded. */
   actionsFeed(): ActionsFeed & { banner: string | null } {
-    // A kind switched OFF leaves the feed too. @mentions were switched off
-    // because a review bot @s the operator constantly, and the bell went quiet —
-    // but the four mentions stayed on their Actions list, which is where they
-    // were looking. A switch labelled "off" that leaves the thing on screen is
-    // not off.
+    // A kind switched OFF leaves the feed too. The operator set @mentions to off
+    // because the swarm @s them constantly, and the bell went quiet — but the four
+    // mentions stayed on their Actions list, which is where they were looking. A
+    // switch labelled "off" that leaves the thing on screen is not off.
     //
     // Filtered HERE, on the way out, rather than at the source: `uatFail` and the
     // row derivations read `#actions.actions` directly, and a UAT send-back must
@@ -2426,10 +2707,10 @@ export class Orchestrator extends EventEmitter {
    * and `supabase stop` / `db:reset` appear nowhere in this codebase.
    *
    * ONE caller: the operator's click on the button. `cfg.edgeContainer` is the
-   * name it measured and the name it restarts, and an EDGE_CONTAINER override
-   * can only rename it to another edge runtime — never a db, storage or auth
-   * container. There is deliberately no automatic caller; see "Why there is no
-   * automatic restart" in docs/INFO.md.
+   * name it measured and the name it restarts, and an EDGE_CONTAINER override can
+   * only rename it to another edge runtime — never a db, storage or auth container.
+   * There is deliberately no automatic caller; see "Why there is no automatic
+   * restart" in docs/INFO.md.
    *
    * Two things happen here that the click alone cannot do:
    *
@@ -2438,9 +2719,8 @@ export class Orchestrator extends EventEmitter {
    *  - a restart that fails says so, once, rather than failing silently.
    *
    * It does NOT refuse while a worker is running. The dialog says plainly that a
-   * mid-flight worker may see an edge function fail, and it is then the
-   * operator's call — which is exactly the judgement the automatic path could
-   * not make.
+   * mid-flight worker may see an edge function fail, and it is then the operator's
+   * call — which is exactly the judgement the automatic path could not make.
    */
   async reclaimEdgeRuntime(): Promise<{ ok: boolean; message: string }> {
     if (this.#reclaiming) {
@@ -2669,7 +2949,7 @@ export class Orchestrator extends EventEmitter {
   }
 
   /**
-   * Ask GitHub about the worktrees that have no open issue of theirs behind them.
+   * Ask GitHub about the worktrees with no open issue of the operator's behind them.
    *
    * Small by construction — a number here is a worktree on this laptop whose
    * issue has left `#issues`, which is normally none and occasionally one — so
@@ -2677,7 +2957,7 @@ export class Orchestrator extends EventEmitter {
    *
    * A number that could not be read KEEPS its previous answer rather than
    * dropping to "unread": a flaky network must not turn a row that correctly
-   * said "closed on GitHub" back into the placeholder the operator read as a fault.
+   * said "closed on GitHub" back into the placeholder that reads as a fault.
    * Numbers that stopped being orphaned are dropped, so a reopened issue cannot
    * leave a stale "closed" behind it.
    */
@@ -2823,10 +3103,9 @@ export class Orchestrator extends EventEmitter {
 
   /**
    * The definitive "will a worker on this account authenticate?" — one real
-   * `claude` run, on the operator's click and never on a timer, because it
-   * spends tokens and can hit a rate limit. Its environment comes from the same
-   * helper the worker spawn uses, so it cannot pass where a real worker would
-   * fail.
+   * `claude` run, on the operator's click and never on a timer, because it spends
+   * tokens and can hit a rate limit. Its environment comes from the same helper the
+   * worker spawn uses, so it cannot pass where a real worker would fail.
    *
    * The result is held in MEMORY only. A login can change outside the console,
    * and a remembered answer written to disk would start looking like a fact.
@@ -2858,8 +3137,7 @@ export class Orchestrator extends EventEmitter {
    * Add an account to `accounts.json` and reload the registry live. The ONLY
    * thing written is that one file at the repo root: the account's config
    * directory is not created, not touched and not looked inside. Linking it is
-   * the vetted script (`linkAccount`); logging it in is always the operator in a
-   * terminal.
+   * the vetted script (`linkAccount`); logging in is always the operator in a terminal.
    */
   async addAccount(
     name: string,
@@ -3014,8 +3292,9 @@ export class Orchestrator extends EventEmitter {
     //
     // Built from what GitHub says about that issue where we have it: the REAL
     // title, because "worktree with no matching open issue" identifies nothing —
-    // the operator could not tell from the row what the work even was — and the real
-    // labels, because a priority and a `blocked` are true of a closed issue too.
+    // the operator could not tell from the row what the work even was — and the
+    // real labels, because a priority and a `blocked` are true of a closed issue
+    // too.
     // The placeholder survives for the one case that has earned it, an issue we
     // could not read, and `orphan` carries the reason to the row so the pane can
     // say which of the three this is.
@@ -3097,9 +3376,11 @@ export class Orchestrator extends EventEmitter {
       workspaces: [this.#cfg.repo],
       repoPath: this.#cfg.repoPath,
       pollError: this.#pollError,
+      pollNote: this.#pollNote,
+      pollNoteWarn: this.#pollNoteWarn,
       lastPolledAt: this.#lastPolledAt,
       pollMs: this.#cfg.pollMs,
-      // Everything on GitHub that needs them, riding the SSE the page already
+      // Everything on GitHub that needs the operator, riding the SSE the page already
       // listens on — no new read endpoint, no polling from the browser.
       actions: this.actionsFeed(),
       notify: this.#notifyStore.prefs,
@@ -3200,6 +3481,10 @@ export class Orchestrator extends EventEmitter {
     // Derived ONCE and read twice — by the row's UAT card and by the sentence
     // deriveStatus writes beside it. Two reads of one fact cannot disagree.
     const uatFail = uatFailFor(this.#actions.actions, issue.number);
+    // What QA had said when this close was first seen. Read for the SAME two
+    // readers and on the same rule: the card's line and the status sentence are
+    // composed from one record, so they cannot word it two ways.
+    const closeVerdict = this.#persisted.closeVerdicts[String(issue.number)] ?? null;
 
     const { status, statusDetail } = deriveStatus({
       hasWorktree: scan !== null,
@@ -3232,6 +3517,11 @@ export class Orchestrator extends EventEmitter {
       // orphan we could not read keeps the old assumption, which is what absence
       // has overwhelmingly always meant.
       issueClosed: orphan !== null && (orphan.reason === 'closed' || orphan.reason === 'unread'),
+      // What QA had said at the close — so "QA signed it off" is something the
+      // console READ rather than something it inferred from the close. Null on
+      // a row it never established, and that row says exactly what it said
+      // before. See `close-verdict.ts`.
+      closeVerdict,
       // The same send-back the UAT chip and card are drawn from, so the sentence
       // beside them cannot contradict them. A `Pass` is not a send-back.
       sentBack:
@@ -3259,6 +3549,11 @@ export class Orchestrator extends EventEmitter {
       // Feedback out of reach until a slot freed. An ask decides nothing: the
       // gate is exactly as open as it was and the ball never left their court.
       answered: this.#answerIsQueued(issue.number),
+      // Only where the row found NO PR of its own and none to inherit. With a PR
+      // in hand the row says what it read, however the poll went; without one it
+      // must not turn a failed read into "there is no pull request". See
+      // `#prsUnreadable`.
+      prsUnreadable: this.#prsUnreadable && pr === null,
     });
 
     return {
@@ -3268,16 +3563,20 @@ export class Orchestrator extends EventEmitter {
       labels: issue.labels,
       updatedAt: issue.updatedAt,
       author: issue.author,
-      // Which issue this was spun off from. The operator asked for the parent
-      // ticket to be named: three of these sit in their queue under their own
-      // name, looking like work the team handed over.
+      // Which issue this was spun off from. The operator needs to know which
+      // original ticket each one came from — three of these were sitting in their
+      // queue under their own name looking like work the team had asked for.
       spunOffFrom: issue.spunOffFrom,
       // Null on every ordinary row. Set only where `state()` synthesized this
       // from a worktree, and then it says WHY there is no open issue behind it.
       orphan,
-      // Where the card sits on the project board. The operator asked for the
-      // board column on the row, so a ticket says where it is. Already fetched
-      // every poll for lane-change actions and the board pre-check — this says it.
+      // The verdict that stood when this closed, with its sentence already
+      // written. The card renders `line`; nothing in the page re-words it.
+      closeVerdict: closeVerdict ? { ...closeVerdict, line: closeLine(closeVerdict) } : null,
+      // Where the card sits on the project board — the operator asked for the
+      // board's queue column on the issue, so it is clear where it is. Already
+      // fetched every poll for lane-change actions and the board pre-check — this
+      // just says it.
       lane: this.#lanes.get(issue.number) ?? null,
       // Sent back from UAT by a human, after the work shipped. Read off the SAME
       // derived actions the feed shows — never a second parse of the comments,
@@ -3285,7 +3584,7 @@ export class Orchestrator extends EventEmitter {
       // both what outranks P0 and what reaches their phone.
       //
       // Deliberately NOT the `changes-requested` label: that is the pre-merge
-      // review bot's, it lands on every feature PR they open, and `reviewBlock`
+      // swarm bot's, it lands on every feature PR they open, and `reviewBlock`
       // already carries it as status 'rework' inside its own band.
       uatFail,
       // Filed by the very account this console assigns work to. The repo's
@@ -3309,13 +3608,13 @@ export class Orchestrator extends EventEmitter {
       // screen — on 6 of 10 worktrees. It is what made the audit report three
       // skipped gates that the operator had in fact approved.
       gatesPassed: gatesPassedFor(this.#decisions, issue.number, scan?.history ?? []),
-      // "Code landed after your QA" — derived from the commit their Gate C approval
-      // was given against, rather than left to a worker to volunteer in prose at
-      // the next gate. The operator asked why such blockers were not surfaced at
-      // gate C, where the decision is actually taken.
+      // "Code landed after your QA" — derived from the commit their Gate C
+      // approval was given against, rather than left to a worker to volunteer in
+      // prose at the next gate. The operator asked why these points were not being
+      // surfaced at gate C as potential blockers.
       codeSinceQa: codeSince(this.#decisions, issue.number, 'C', scan?.head ?? null),
-      // What they left open at the gate they last approved. It used to evaporate and
-      // come back as the worker's own choice, announced as a "last call".
+      // What they left open at the gate they last approved. It used to evaporate
+      // and come back as the worker's own choice, announced as a "last call".
       leftUnanswered:
         this.#decisions
           .filter((d) => d.issue === issue.number && d.decision === 'approved')
@@ -3324,11 +3623,11 @@ export class Orchestrator extends EventEmitter {
       gate,
       gateReport: scan?.gateReport ?? null,
       // Union'd with the console's own snapshot when a targeted rework is in
-      // play — see `#evidenceFor`. Nothing the operator has already looked at
-      // disappears from this card because a worker rewrote `.gate.json` badly.
+      // play — see `#evidenceFor`. Nothing the operator has looked at disappears
+      // from this card because a worker rewrote `.gate.json` badly.
       gateEvidence: this.#evidenceFor(issue.number, scan),
-      // The structured click-script, so the card can give them real links rather
-      // than a reference to a script they cannot reach — and with any step the
+      // The structured click-script, so the card can give real links rather than
+      // a reference to a script the operator cannot reach — and with any step the
       // console has already shown them put back underneath it. See `#manualQaFor`.
       gateManualQa: this.#manualQaFor(issue.number, scan),
       // The comprehension quiz. Null locks the gate: a half nobody was offered
@@ -3343,25 +3642,29 @@ export class Orchestrator extends EventEmitter {
         autoRounds: this.#persisted.supercharged[String(issue.number)]?.autoRounds ?? 0,
         stopped: this.#persisted.superchargeStopped[String(issue.number)] ?? null,
       },
-      // Their own ticks, one per QA step. The console's, not the worker's.
+      // The operator's own ticks, one per QA step. The console's, not the worker's.
       qaVerdicts: this.#persisted.qaVerdicts[String(issue.number)] ?? [],
       // ...and the RESOLVED view of them, joined onto the steps that are on the
       // card right now. The page renders from this rather than re-deriving it:
       // the join is a content hash, and a second implementation of that hash in
-      // the browser is a second chance to show a tick against a step the
-      // operator never read. One rule, in one place.
+      // the browser is a second chance to show a tick against a step the operator
+      // never read. One rule, in one place.
       ...this.#qaTicks(issue.number, scan),
       // The latest targeted rework, so the card can say a step went back to
       // Build and whether what came back carried everything else forward.
       qaRework: (this.#persisted.qaReworks[String(issue.number)] ?? []).at(-1) ?? null,
+      // What the last screenshot capture did — including nothing, and why. The
+      // round key it was filed under is dropped here: the card needs the outcome
+      // and the time, and the hash is bookkeeping this side of the wire.
+      captureReport: captureOf(this.#persisted.captures[String(issue.number)]),
       // The question-and-answer thread at the open gate. Console-owned, so it
       // survives the window where the gate file has been deleted for a resume.
       gateThread: this.#persisted.gateThreads[String(issue.number)] ?? null,
       history: scan?.history ?? [],
       reopenings: this.#persisted.reopenings[String(issue.number)] ?? [],
-      // They post this under their own name, so WHO it reaches is the one fact that
-      // has to be on the card. Resolved here, against the issue's real author,
-      // rather than printing whatever the worker happened to type.
+      // The operator posts this under their own name, so WHO it reaches is the
+      // one fact that has to be on the card. Resolved here, against the issue's
+      // real author, rather than printing whatever the worker happened to type.
       commentRequest: commentRequest
         ? {
             ...commentRequest,
@@ -3378,10 +3681,10 @@ export class Orchestrator extends EventEmitter {
       // the operator's assigned work. The row carries the draft, the prefilled
       // GitHub link, AND a console-side file button: the decision stays theirs
       // either way, but filing here means the console learns the new number and
-      // can record the link, which the browser form never could. A folded draft
-      // is gone from the card: the file lingers until the worker's next resume,
-      // and re-offering it would invite filing the very thing that was just
-      // absorbed.
+      // can record the link, which the browser form never could.
+      // A folded draft is gone from the card: the file lingers until the worker's
+      // next resume, and re-offering it would invite filing the very thing that
+      // was just absorbed.
       issueRequest:
         scan?.issueRequest && !foldedTitles.includes(scan.issueRequest.title)
           ? {
@@ -3399,7 +3702,7 @@ export class Orchestrator extends EventEmitter {
       boardRequest: scan?.boardRequest
         ? {
             ...scan.boardRequest,
-            boardUrl: boardUrl(this.#cfg.repo.split('/')[0] ?? '', this.#cfg.boardProjectNumber),
+            boardUrl: boardUrl(this.#cfg.repo.split('/')[0] ?? 'example-org'),
             // Set once the console has moved this card itself. The card then reads
             // in the past tense, with no link and no button — a thing that happened,
             // not a thing wanted.
@@ -3448,11 +3751,11 @@ export class Orchestrator extends EventEmitter {
         // The operator answered the round; the reviewer has not cleared it. Two
         // different events that shared one field until #4344 walked to Gate E on
         // the strength of the first while the second had not happened.
-        // reviewHistory, NOT reviewBlock. reviewBlock is the ACTIONABLE block
-        // and is null exactly when a round has been answered — which is the only
-        // case this function exists for. Wiring it there made the fix inert, and
-        // its unit tests passed the whole time because they tested the function
-        // and not the wiring.
+        // reviewHistory, NOT reviewBlock. reviewBlock is the ACTIONABLE block and
+        // is null exactly when a round has been answered — which is the only case
+        // this function exists for. Wiring it there made the fix inert, and its
+        // unit tests passed the whole time because they tested the function and
+        // not the wiring.
         reviewOutstanding: reviewOutstanding(reviewHistory, pr ?? {}),
       openQuestion: this.#openQuestions.get(issue.number) ?? null,
       // The whole "what is this waiting on" card, as finished strings. Built
@@ -3476,7 +3779,7 @@ export class Orchestrator extends EventEmitter {
               state: pr.state,
               checklist: pr.checklist ?? null,
               // Who GitHub is actually waiting on. Without these the card named
-              // a read-only review bot that can neither block nor clear.
+              // the swarm bot, a read-only reviewer that can neither block nor clear.
               reviewDecision: pr.reviewDecision ?? null,
               reviewRequests: pr.reviewRequests ?? [],
               latestReviews: pr.latestReviews ?? [],
@@ -3510,8 +3813,8 @@ export class Orchestrator extends EventEmitter {
    * Three of the four are answered from the console's own audit and cost no
    * network read at all: the notification ledger keys every lane change and
    * every merge it has announced, and `decisions.jsonl` keys every gate D — the
-   * approval to raise a PR. Raising a PR is a gate, so the console already
-   * witnessed it and needs no `gh` call to find out.
+   * approval to raise a PR — the operator asked that a PR being raised be read
+   * off that gate rather than costing another gh call.
    *
    * The fourth, issues closed, has no audit entry — nothing announces a closure
    * — so it keeps the read-only `gh issue list --state closed` the prose summary
@@ -3737,9 +4040,9 @@ export class Orchestrator extends EventEmitter {
         `${unattributed} merged PR(s) could not be matched to an issue, so they are not in the raised → merged average`,
       );
     }
-    // A WEEK, against the whole range. The operator asked for a recent average
-    // beside the overall one — the level alone says nothing about
-    // whether it is improving.
+    // A WEEK, against the whole range. The operator asked for a week's average
+    // beside the overall one — the level alone says nothing about whether it is
+    // improving.
     const recentDays = 7;
     const summary = summarise(perIssue.map((p) => p.legs));
     const recent = summariseSince(perIssue, Date.now() - recentDays * 86_400_000);
@@ -3763,8 +4066,7 @@ export class Orchestrator extends EventEmitter {
    * rather than letting the worst case go unmeasured.
    */
   async audit(): Promise<{ ok: boolean; message: string }> {
-    // `manual`, same as Refresh: the operator pressing a button outranks the
-    // quota brake.
+    // `manual`, same as Refresh: the operator pressing a button outranks the brake.
     const ran = await this.poll({ manual: true });
     const to = etDayOf(new Date().toISOString());
     const from = etDayOf(new Date(Date.now() - 30 * 86_400_000).toISOString());
@@ -3895,20 +4197,21 @@ export class Orchestrator extends EventEmitter {
   /**
    * Move the board cards the console is entitled to move, and say nothing.
    *
-   * A card left on `Ready` while a worker is actively on it should read `In
-   * progress`, and moving that one is a move the console is entitled to make.
-   * The rule and every refusal live in board.ts; this is only the plumbing.
+   * The operator asked that a card left in 'Ready' while the work is actively
+   * under way be moved on to 'In Progress' by the agent. The rule and every
+   * refusal live in board.ts; this is only the plumbing around it.
    *
    * Called from `poll()` and NOWHERE else. Not from `#row`/`state()`, which the
    * server calls once per open tab per change event — a write placed there would
    * fire many times a minute off caches that only a poll refreshes.
    */
   async #applyBoardMoves(): Promise<void> {
-    // No BOARD_PROJECT_NUMBER, no board: nothing is read and nothing is moved.
-    // Guessing a project number here would move cards on whichever project the
-    // org happens to have numbered that. See config.ts.
+    // No board, nothing to move. `boardProjectNumber` is null when
+    // BOARD_PROJECT_NUMBER is unset, and a console without a project board runs
+    // everything else exactly as it always did.
     if (this.#cfg.boardProjectNumber === null) return;
     if (this.#applyingBoard) return;
+    const projectNumber = this.#cfg.boardProjectNumber;
     this.#applyingBoard = true;
     try {
       for (const scan of this.#scans) {
@@ -3930,8 +4233,9 @@ export class Orchestrator extends EventEmitter {
         // before it could fire, and nothing would ever have moved them. A CLOSED
         // PR does not count — that one was abandoned, not reviewed.
         const submitted = (st: string): boolean => st === 'OPEN' || st === 'MERGED';
-        // Its own branch's PR, OR a PR that references it. #4562 is the case that
-        // proved it: its fix was folded into #4535, and #4535 says `Closes
+        // Its own branch's PR, OR a PR that references it. On #4562 the operator
+        // pointed out that work folded into the original issue's PR has been
+        // submitted for review too. Its fix went into #4535 and #4535 says `Closes
         // #4562`, so it HAS been submitted for review; it just has no branch of
         // its own. Keyed on the branch alone, a folded-in issue sits on
         // `In progress` for ever.
@@ -3984,7 +4288,7 @@ export class Orchestrator extends EventEmitter {
             continue;
           }
 
-          const card = await readBoardItem(this.#cfg.repo, scan.issue, this.#cfg.boardProjectNumber);
+          const card = await readBoardItem(this.#cfg.repo, scan.issue, projectNumber);
           const decision = decideBoardMove({ ...base, card });
           if (!decision.spend) continue;
 
@@ -4041,10 +4345,10 @@ export class Orchestrator extends EventEmitter {
     // over a worktree that is present and healthy.
     //
     // `staleFenceJobs` clears that on the next poll, which is the right backstop
-    // but the wrong first answer: the red card on #4405 was read as broken, and
-    // the same fix was asked for twice. A refusal to rebuild
-    // something that is already there is not news — it is a plain "you already
-    // have one", said before anything is recorded.
+    // but the wrong first answer: the operator saw the red card on #4405, read it
+    // as broken, and asked for the same thing to be fixed twice. A refusal to
+    // rebuild something that is already there is not news — it is a plain "you
+    // already have one", said before anything is recorded.
     if (await pathExists(plan.worktreePath)) {
       void this.poll(); // pick it up, so the next click gets the cached answer
       return { ok: false, message: `#${issueNumber} already has a worktree — nothing to create` };
@@ -4377,8 +4681,9 @@ export class Orchestrator extends EventEmitter {
   /**
    * PARK: the operator sets a ticket aside.
    *
-   * The ask was narrow: a parked ticket stays at its gate, stops climbing to
-   * the top of the queue, and says plainly on the row that it is paused.
+   * The operator asked for a way to pause a ticket: it stays where it is at its
+   * gate, it stops appearing at the top of the queue, and the row says plainly
+   * that it is paused.
    *
    * Read what this method does NOT do, because that is the specification. It
    * does not touch `.gate.json`. It does not stop, start, signal or queue
@@ -4389,16 +4694,16 @@ export class Orchestrator extends EventEmitter {
    * for the top of the list.
    *
    * Parking a RUNNING worker is allowed and deliberately so: the alternative is
-   * a rule nobody asked for, on the one path where the intent is most obvious
-   * it ("this is going the wrong way, I'll come back to it"). The worker goes
-   * on running and the live card goes on saying so.
+   * a rule the operator did not ask for, on the one path where they most
+   * obviously mean it — this is going the wrong way, come back to it later. The
+   * worker goes on running and the live card goes on saying so.
    */
   async parkIssue(issueNumber: number, reason: string): Promise<{ ok: boolean; message: string }> {
     const key = String(issueNumber);
     const already = this.#persisted.parked[key];
     if (already) return { ok: false, message: `#${issueNumber} is already parked` };
     // Empty is a real answer, and it is stored as null rather than '' so that
-    // "they gave no reason" and "they typed a space" are the same fact on the row.
+    // "they gave no reason" and "they typed a space" are one fact on the row.
     const trimmed = reason.trim();
     const stamp: ParkedStamp = { at: new Date().toISOString(), reason: trimmed === '' ? null : trimmed };
     this.#persisted.parked[key] = stamp;
@@ -4594,8 +4899,8 @@ export class Orchestrator extends EventEmitter {
    * the worker post the ready-to-verify comment on the ISSUE — a GitHub write. A
    * console worker may not do that. The prompt the card prefills overrides it
    * toward `.comment-request.json` → CommentCard → the operator's click → the
-   * guarded issue/PR comment writer, which is still the only GitHub write in
-   * this codebase. Nothing here writes to GitHub.
+   * guarded issue/PR comment writer, still the only GitHub write in this codebase.
+   * Nothing here writes to GitHub.
    */
   async postMergeStart(
     issueNumber: number,
@@ -4612,9 +4917,8 @@ export class Orchestrator extends EventEmitter {
     if (account && !hasAccount(this.#accounts, account)) return { ok: false, message: `unknown account '${account}'` };
 
     // A session on disk is the better path by far: it remembers the issue, the
-    // plan and the review rounds. `resume` sends the operator's words
-    // byte-exactly and parks the decision if the desk is full, exactly like
-    // every other answer.
+    // plan and the review rounds. `resume` sends the operator's words byte-exactly
+    // and parks the decision if the desk is full, like every other answer.
     const sessionId = scan.sessionId ?? this.#persisted.sessions[key];
     // Stage 9 decides no gate: `null` is the contract's own "this is not a
     // decision". It only ever mattered if a gate file happened to still be on
@@ -4672,8 +4976,8 @@ export class Orchestrator extends EventEmitter {
    * memory and headroom checks still happen, at dispatch, where they belong.
    *
    * A second answer replaces the first. Two answers to one gate queued behind
-   * each other would be answered in the wrong order, and the last thing the operator
-   * said is what they mean.
+   * each other would be answered in the wrong order, and the last thing the
+   * operator said is what they mean.
    */
   /** A held resume keeps BOTH marks: which decision it was, and who made it. */
   async #holdResume(
@@ -4689,7 +4993,7 @@ export class Orchestrator extends EventEmitter {
     this.#persisted.pendingResume[key] = message;
     // Written beside the words, in the same save, because the two are one fact:
     // what is parked, and whether it is a failure going back. A replacement
-    // overwrites this as it overwrites the message — the newest thing they sent is
+    // overwrites this as it overwrites the message — the newest thing sent is
     // the one that runs, so it is also the one that ranks.
     if (sentBack) this.#persisted.sentBackResumes[key] = true;
     else delete this.#persisted.sentBackResumes[key];
@@ -4712,16 +5016,15 @@ export class Orchestrator extends EventEmitter {
   /**
    * A queued rework that the message now being held is about to overwrite.
    *
-   * `pendingResume` holds exactly ONE message, so the next thing the operator
-   * sends from the same card replaces whatever was parked there. When that was a
-   * targeted rework it was the only thing carrying their failed step, the prior
-   * evidence and the whole click-script forward — and it went silently, under a
-   * generic line about replacing "the answer you had queued". The card kept
-   * saying the step was with Build, `outstanding` stayed true so nothing ever
-   * retired, and the worker's next stop was judged against a baseline for a
-   * round it never received: a fresh gate file, every tick reset, and a
-   * dropped-evidence accusation against a worker that was never asked to carry
-   * anything.
+   * `pendingResume` holds exactly ONE message, so the next thing the operator sends
+   * from the same card replaces whatever was parked there. When that was a targeted
+   * rework it was the only thing carrying their failed step, the prior evidence and
+   * the whole click-script forward — and it went silently, under a generic line
+   * about replacing "the answer you had queued". The card kept saying the step
+   * was with Build, `outstanding` stayed true so nothing ever retired, and the
+   * worker's next stop was judged against a baseline for a round it never
+   * received: a fresh gate file, every tick reset, and a dropped-evidence
+   * accusation against a worker that was never asked to carry anything.
    *
    * Cancelling is the honest half. The SNAPSHOT deliberately stays: it is the
    * ratchet holding this stop's evidence on the card, and the round that never
@@ -4741,10 +5044,10 @@ export class Orchestrator extends EventEmitter {
    * A decision the operator has made is ACCEPTED even when nothing can run right
    * now. It used to be refused — "at capacity: 2 of 2 active" — and a refusal at
    * the far end of a click reads as a dead button: they approved four gates and
-   * two of them silently did nothing. So a busy machine parks the decision
-   * instead: the exact message is written to state.json, the issue joins the
-   * queue, and the dispatch that finds a free slot resumes with those words and
-   * no others. The decision waits; it never dies.
+   * two of them silently did nothing. So a busy machine parks the decision instead:
+   * the exact message is written to state.json, the issue joins the queue, and
+   * the dispatch that finds a free slot resumes with those words and no others.
+   * The decision waits; it never dies.
    *
    * `fromDispatch` is the queue calling back in, where the slot has already been
    * counted — parking there would queue the issue behind itself.
@@ -4757,16 +5060,25 @@ export class Orchestrator extends EventEmitter {
       decision?: 'approved' | 'feedback' | null;
       sentBack?: boolean;
       /** Set only by a supercharged run, so the ledger can tell an automatic
-       *  pass from one the operator read and approved. See `supercharge.ts`. */
+       *  pass from one the operator read and approved themselves. See
+       *  `supercharge.ts`. */
       by?: 'supercharge';
     } = {},
   ): Promise<{ ok: boolean; message: string }> {
     // `null` means "this is not a decision" — the queue continuing work that was
-    // never parked on them. Everything else records: a direct call is the
-    // operator acting now, and a dispatch carrying a HELD answer is the
-    // operator's decision finally running (it was held at capacity, so it was
-    // never recorded at the moment they gave it).
-    const decision = opts.decision === undefined ? 'approved' : opts.decision;
+    // never parked on them. Everything else records: a direct call is the operator
+    // acting now, and a dispatch carrying a HELD answer is their decision finally
+    // running (held at capacity, so never recorded at the moment they gave it).
+    const asked = opts.decision === undefined ? 'approved' : opts.decision;
+    // A SEND-BACK THE CONSOLE COMPOSED IS NOT AN APPROVAL, whatever the caller
+    // said. `/api/issues/:n/resume` defaults an absent `decision` to `approved`,
+    // so all four "your gate C deliverable is incomplete" prompts have been
+    // writing approvals of the gate they were sent back from — see
+    // `sentBackByTheConsole`. Read from the message rather than from the flag
+    // because the flag is the page's, and the page is the half that got it wrong.
+    //
+    // It only ever demotes, and it demotes on bytes the console itself wrote.
+    const decision = asked === 'approved' && sentBackByTheConsole(message) ? 'feedback' : asked;
     // Is this them handing the work BACK? `feedback` is that by definition
     // (decisions.ts: "`approved` moves the work on; `feedback` sends it back"),
     // and a caller that knows better says so — `qaRework` and `reopenGate` are
@@ -4782,14 +5094,21 @@ export class Orchestrator extends EventEmitter {
     //
     // Only at the moment of the click: `fromDispatch` is an answer they already
     // gave being run late (it was checked when they gave it, and refusing it here
-    // would strand it), and `by` is a supercharged run, which is not them typing.
+    // would strand it), and `by` is a supercharged run, which is nobody typing at
+    // all.
     // Only for an approval: a send-back may ask anything it likes.
+    //
+    // Read against THEIR OWN WORDS, not the composed message. `approvePrompt` puts
+    // `Gate D approved, proceed.` in front of whatever is in the textarea, so the
+    // check as written found the page's `approved` and `proceed` every single
+    // time and passed #5402's two questions through as the approvals it was
+    // built to catch. `saidInTheApproveBox` takes that one canned line back off.
     if (
       scan.gate &&
       decision === 'approved' &&
       opts.fromDispatch !== true &&
       opts.by === undefined &&
-      readsAsQuestion(message)
+      readsAsQuestion(saidInTheApproveBox(scan.gate.gate, message))
     ) {
       return { ok: false, message: questionNotApprovalRefusal(scan.gate.gate) };
     }
@@ -4852,8 +5171,7 @@ export class Orchestrator extends EventEmitter {
       // silently disappeared would be indistinguishable from one that was ignored.
       await this.#supersedeOpenQuestions(issueNumber);
 
-      // Resuming clears any comment block — the operator has the answer now, we
-      // are unblocked.
+      // Resuming clears any comment block — the answer is in hand, we are unblocked.
       const commentBlock = this.#persisted.commentBlocks[String(issueNumber)];
       if (commentBlock) {
         if (commentBlock.requestKey) {
@@ -4867,10 +5185,9 @@ export class Orchestrator extends EventEmitter {
         await this.#save();
       }
 
-      // Resuming an actionable rework round marks it handled: stamp the
-      // operator's resume prompt as the decision and when they started it. The
-      // round stays in history; it is just no longer the actionable one, so the
-      // row leaves 'rework'.
+      // Resuming an actionable rework round marks it handled: stamp the operator's
+      // resume prompt as the decision and when they started it. The round stays in
+      // history; it is just no longer the actionable one, so the row leaves 'rework'.
       const rework = this.#persisted.reviewBlocks[String(issueNumber)];
       const roundToStamp = rework?.rounds[rework.rounds.length - 1];
       if (roundToStamp && isActionable(roundToStamp)) {
@@ -4893,7 +5210,7 @@ export class Orchestrator extends EventEmitter {
       // recoverable, and a resume with no decision recorded is exactly the hole
       // this closes.
       if (scan.gate && decision !== null) {
-        await this.#recordDecision(issueNumber, scan.gate.gate, decision, message, sessionId, scan.path, opts.by);
+        await this.#recordDecision(issueNumber, scan.gate, decision, message, sessionId, scan, opts.by);
       }
 
       await this.#spawnResume(issueNumber, scan, sessionId, message, null);
@@ -4937,23 +5254,23 @@ export class Orchestrator extends EventEmitter {
    * Write one decision line, and keep the in-memory copy in step.
    *
    * A dispatch from the queue does NOT come through here: that is the console
-   * running an answer the operator already gave, and the decision was recorded
-   * at the moment they gave it. Recording it twice would show the gate approved
-   * twice.
+   * running an answer the operator already gave, and the decision was recorded at
+   * the moment they gave it. Recording it twice would show the gate approved twice.
    */
   async #recordDecision(
     issue: number,
-    gate: GateLetter,
+    gateFile: GateFile,
     decision: 'approved' | 'feedback',
     message: string,
     sessionId: string | null,
-    worktree: string | null,
+    scan: WorktreeScan,
     by?: 'supercharge',
   ): Promise<void> {
+    const gate = gateFile.gate;
     const qa = this.#qaProgressFor(issue);
     // WHAT they approved OF. Without this, a commit landing afterwards is invisible
-    // and they only hear about it if a worker volunteers it at the next gate.
-    const head = worktree ? await gitHead(worktree) : null;
+    // and they only hear of it if a worker volunteers it at the next gate.
+    const head = await gitHead(scan.path);
     // What they left OPEN. These used to evaporate — the worker took its own
     // recommendation and asked again later as a "last call".
     const thread = this.#persisted.gateThreads[String(issue)] ?? null;
@@ -4967,20 +5284,46 @@ export class Orchestrator extends EventEmitter {
       sessionId,
       account: this.#persisted.accountByIssue[String(issue)] ?? null,
       // Gate C only: their own tick counts at the instant they decided, so the
-      // record says what they had actually verified rather than what a worker
-      // later claimed.
+      // record says what they verified rather than what a worker later claimed.
       qa: gate === 'C' ? qa : null,
       head,
       unanswered,
       // Absent on every decision the operator made themselves, which is what
-      // keeps the ledger's history readable: `by` is present only when the
-      // console passed the gate on their standing instruction. #5402 is why this
-      // matters — two questions recorded as approvals left a ticket whose
-      // history claimed a gate was passed twice while nothing had been decided.
+      // keeps the ledger's history readable: `by` is present only when the console
+      // passed the gate on their standing instruction. #5402 is why this matters
+      // — two questions recorded as approvals left a ticket whose history claimed
+      // a gate was passed twice while nothing had been decided.
       ...(by ? { by } : {}),
     };
     await appendDecision(this.#cfg.decisionsFile, rec);
     this.#decisions.push(rec);
+
+    // AND THE ROUND ITSELF, into the worktree's own audit trail, because the
+    // console is about to destroy the only copy of it. See `appendGateHistory`
+    // for the fence note: this is the one place the console writes into a
+    // customer worktree, and it writes one appended line.
+    //
+    // Evidence and the click-script come from the CARD's copies, not from the
+    // raw file. `#evidenceFor` and `#manualQaFor` put back anything a fumbled
+    // rework dropped, and what the operator decided against is what they were
+    // shown — a permanent record of the shrunken list would be a record of a gate
+    // nobody was offered. The quiz and the worker's thread are the file's own.
+    //
+    // `resumedAt` is null and stays null. The console records the DECISION; the
+    // resume it is about to attempt may still be refused, and stamping a time
+    // for something that has not happened is the invention this whole record
+    // exists to remove.
+    await appendGateHistory(join(scan.path, '.gate-history.jsonl'), {
+      ...gateFile,
+      evidence: this.#evidenceFor(issue, scan),
+      thread: scan.gateThreadFile,
+      manualQa: this.#manualQaFor(issue, scan),
+      quiz: scan.gateQuiz,
+      decision: message,
+      resumedAt: null,
+      account: this.#persisted.accountByIssue[String(issue)] ?? null,
+    });
+
     this.#changed();
   }
 
@@ -5006,8 +5349,8 @@ export class Orchestrator extends EventEmitter {
       // THE GATE IS READ FROM DISK HERE, not taken from `scan`.
       //
       // #5555 is why. It parked at gate B, the card said "AT GATE B — waiting
-      // for you" for seven minutes, and the only reading the console offered
-      // was that a supercharged run was asking for gate B anyway.
+      // for you" for seven minutes, and the only reading available to the operator
+      // was that a supercharged run was asking for gate B approval anyway.
       // The decision logic was right and had already passed gate A on the same
       // issue; what was wrong was WHEN it ran. `#scans` is shared, generation-
       // guarded and refreshed by both this poll and the watcher, and `poll()`
@@ -5050,9 +5393,8 @@ export class Orchestrator extends EventEmitter {
         steps: qa?.steps ?? [],
         qaDropped: qa?.dropped ?? 0,
         // The RESTORED count, the same one the card renders — not the raw gate
-        // file. A worker that dropped an entry the operator has already been
-        // shown must not be able to fail its own evidence check into a send-back
-        // loop.
+        // file. A worker that dropped an entry the operator has been shown must
+        // not be able to fail its own evidence check into a send-back loop.
         evidenceCount: this.#evidenceFor(scan.issue, scan).length,
         autoRounds: flag.autoRounds,
       });
@@ -5137,7 +5479,8 @@ export class Orchestrator extends EventEmitter {
     };
   }
 
-  /** Their QA ticks right now, for the Gate C record. Null when there is no QA. */
+  /** The operator's ticks right now, for the Gate C record. Null when there is
+   *  no QA. */
   #qaProgressFor(issue: number): { ticked: number; total: number } | null {
     const v = this.#persisted.qaVerdicts[String(issue)];
     if (!v) return null;
@@ -5196,8 +5539,8 @@ export class Orchestrator extends EventEmitter {
    * The third act at a gate, and the whole point of it is what it does NOT do:
    * it clears no comment block, starts no rework round, and passes nothing. The
    * worker answers, writes the gate file back with the same letter, and stops in
-   * the same place — so the gate is still the operator's to decide, with one
-   * more thing understood about it.
+   * the same place — so the gate is still the operator's to decide, with one more
+   * thing understood about it.
    *
    * It has its own method rather than being a client-composed `/resume` for
    * exactly that reason: only the orchestrator can know a message is a question,
@@ -5289,7 +5632,7 @@ export class Orchestrator extends EventEmitter {
       : { gate, entries: [], pendingAskIds: [], violation: null, closedAt: null, stoppedAt: scan.gate?.stoppedAt ?? null };
     // Asking re-opens the exchange. Without this, a question asked after a
     // decision was queued would sit inside a thread already marked closed, and
-    // be retired underneath the operator with their question still unanswered in it.
+    // be retired underneath the operator with their question unanswered in it.
     record.closedAt = null;
     const nextId = record.entries.reduce((max, e) => Math.max(max, e.id), 0) + 1;
     record.entries.push({
@@ -5324,9 +5667,9 @@ export class Orchestrator extends EventEmitter {
     // silence, which is the rule this whole module is built on, so it is named.
     const droppedQuestions = !carryOn && heldQuestions > 0 ? existing!.gate : null;
     // A queued REWORK is the sharpest thing this can overwrite, and "the answer
-    // you had queued" is not a sentence that tells the operator their failed
-    // step has been cancelled. Only the two PARKING paths below write over
-    // `pendingResume`; a question that goes straight out replaces nothing.
+    // you had queued" is not a sentence that tells the operator their failed step
+    // has been cancelled. Only the two PARKING paths below write `pendingResume`; a
+    // question that goes straight out replaces nothing.
     const parking = deliveryBusy || deliveryHold !== null;
     const cancelledRework = parking ? this.#cancelQueuedRework(issueNumber) : null;
     const alsoSay =
@@ -5398,10 +5741,10 @@ export class Orchestrator extends EventEmitter {
    * A targeted rework asks the worker to rewrite `.gate.json` carrying every
    * other step's evidence forward verbatim, and mostly it will. When it does
    * not, the honest thing is not to show the operator a shorter list than they
-   * had five minutes ago: they are being asked to approve the whole issue on
-   * this card, and the requirement is the full evidence for the entire issue,
-   * in the gate C box. So the snapshot leads and anything new is
-   * appended, matched on path.
+   * had five minutes ago: they are being asked to approve the whole issue on this
+   * card, and the requirement is the full evidence for the entire issue in the
+   * gate C box. So the snapshot leads and anything new is appended, matched on
+   * path.
    *
    * The violation is recorded separately (`#checkQaReworkEnding`) rather than
    * inferred here, because this runs on every render and an accusation must be
@@ -5456,8 +5799,105 @@ export class Orchestrator extends EventEmitter {
   }
 
   /**
-   * Which of the captures the console had already shown the operator are no
-   * longer FILES.
+   * TAKE THE MISSING SCREENSHOTS FOR ONE ISSUE, and remember what happened.
+   *
+   * The runner is in capture.ts and everything interesting is there; this is the
+   * wiring — the worktree, the two ports and the operator's storage state — plus
+   * the record that makes the automatic run happen once per gate round.
+   *
+   * The browser itself is opened lazily inside `playwrightDriver`, at the moment
+   * a capture is about to run, so a console on a machine with no Chromium
+   * starts, polls and serves exactly as it always did and finds out about the
+   * missing browser at the one moment it matters — on the card, with the command
+   * that fixes it.
+   */
+  async #captureFor(scan: WorktreeScan): Promise<CaptureReport> {
+    const report = await captureGateShots(
+      {
+        issue: scan.issue,
+        worktree: scan.path,
+        port: scan.state.port,
+        baselinePort: this.#cfg.baselinePort,
+        storageState: this.#cfg.qaStorageState,
+      },
+      this.#captureDeps,
+    );
+    // Keyed on the gate file's bytes, so the automatic pass is one attempt per
+    // round. A FAILED attempt claims the round too: a machine with no browser
+    // must not re-launch one on every poll for the whole time a gate sits open,
+    // and the failure is on the card with a button beside it.
+    this.#persisted.captures[String(scan.issue)] = { ...report, gateHash: scan.gateHash };
+    await this.#save();
+    this.#log(`#${scan.issue}: capture — ${report.line}`);
+    return report;
+  }
+
+  /**
+   * SCREENSHOTS BEFORE THE CARD, not after a round trip through the operator.
+   *
+   * The operator asked for captures that are always there, always consistent, and
+   * generated with no human intervention. The measured cost of the old behaviour
+   * was 32 of 53 gate C send-backs spent asking for a capture, so this runs inside
+   * the poll that first sees a gate C — the same poll `#track` fires the moment a
+   * worker parks — and the caller re-scans afterwards, so the first card the
+   * operator is shown already has the pictures on it.
+   *
+   * It is deliberately narrow about when it will run at all:
+   *
+   *  - gate C only. It is the only gate with a click-script to photograph.
+   *  - not while a worker is running. A capture stamps `.gate.json`, and the
+   *    worker owns that file until it stops.
+   *  - once per gate ROUND, keyed on the file's own bytes. A worker that comes
+   *    back with new steps is a new round and gets a new attempt; a poll five
+   *    minutes later is not.
+   *
+   * Returns whether anything was stamped, which is the caller's cue to re-read
+   * the worktree.
+   */
+  async #captureMissingShots(): Promise<boolean> {
+    let stamped = false;
+    for (const scan of this.#scans) {
+      if (scan.gate?.gate !== 'C') continue;
+      if (this.#busy(scan.issue)) continue;
+      if (scan.gateHash === null) continue;
+      const last = this.#persisted.captures[String(scan.issue)];
+      if (last?.gateHash === scan.gateHash) continue;
+      const report = await this.#captureFor(scan).catch((e: Error) => {
+        // Unreachable — `captureGateShots` returns its failures rather than
+        // throwing — but a capture that threw must not take a poll down with it,
+        // and an empty catch is the silent skip this feature exists to delete.
+        this.#log(`#${scan.issue}: capture threw — ${e.message}`);
+        return null;
+      });
+      if (report?.ok) stamped = true;
+    }
+    return stamped;
+  }
+
+  /**
+   * Run the capture again, on the operator's click.
+   *
+   * The same runner, with the once-per-round guard deliberately not consulted:
+   * they press this when they have just started the dev server, or fixed the
+   * baseline, or wants the pair retaken. It writes into a worktree, so it is
+   * refused while that worktree's worker is running — that file is the worker's
+   * until it stops.
+   */
+  async captureShots(issueNumber: number): Promise<{ ok: boolean; message: string }> {
+    const scan = this.#scans.find((s) => s.issue === issueNumber) ?? null;
+    if (!scan) return { ok: false, message: `no worktree for #${issueNumber}` };
+    if (scan.gate?.gate !== 'C') return { ok: false, message: `#${issueNumber} is not at gate C` };
+    if (this.#busy(issueNumber)) {
+      return { ok: false, message: 'the worker is running — it owns the gate file until it stops' };
+    }
+    const report = await this.#captureFor(scan);
+    if (report.ok) await this.poll();
+    this.#changed();
+    return { ok: report.ok, message: report.line };
+  }
+
+  /**
+   * Which of the captures already shown to the operator are no longer FILES.
    *
    * The restore in `#evidenceFor` puts back a manifest entry; the evidence route
    * then reads the bytes live out of the worktree. So a worker that unlinks the
@@ -5471,8 +5911,8 @@ export class Orchestrator extends EventEmitter {
    * differently.
    *
    * A PICTURE is byte-exact or it is a different picture: same filename, new
-   * image, and the tick above it is now vouching for something the operator
-   * never saw. Size-and-mtime is exactly right there.
+   * image, and the tick above it is now vouching for something never looked at.
+   * Size-and-mtime is exactly right there.
    *
    * A TRANSCRIPT is not. A rework that fixes a step and appends "here is what I
    * found and how I proved it" has made the evidence BETTER, and that is the
@@ -5518,8 +5958,7 @@ export class Orchestrator extends EventEmitter {
       // Text, stamped by content: the old bytes must still be the HEAD of the
       // file. Pure additions pass; a rewrite, a deletion or a mid-file edit does
       // not. Report the line counts either way — "95 added, 0 removed" is the
-      // whole answer to "what changed", and the operator should not have to go
-      // and diff it.
+      // whole answer to "what changed", and nobody should have to diff it by hand.
       if (was.startsWith('t:')) {
         const [, lenRaw, hash] = was.split(':');
         const wasLen = Number(lenRaw);
@@ -5557,9 +5996,9 @@ export class Orchestrator extends EventEmitter {
    * the counts the Approve button reads.
    *
    * `complete` is the QA half of the gate lock, and only the QA half: the quiz
-   * half is submitted in the page. Both are required — dropping comprehension
-   * was considered and deliberately rejected, so the gate stays blocked by the
-   * QA half AND the comprehension half, and nothing
+   * half is submitted in the page. Both are required — the operator considered
+   * dropping comprehension and decided against it in the same breath, keeping the
+   * gate blocked by the QA half and the comprehension half together, so nothing
    * here should ever be read as the whole lock.
    */
   #qaTicks(
@@ -5651,9 +6090,8 @@ export class Orchestrator extends EventEmitter {
    * Send the failed steps — and only those — back to Build.
    *
    * Failing a step does not dispatch; this does. The operator works down the
-   * whole card ticking, and one button sends everything they failed in ONE
-   * round. Two sequential worker runs for two failed steps is the cost they
-   * objected to.
+   * whole card ticking, and one button sends everything they failed in ONE round.
+   * Two sequential worker runs for two failed steps is the cost they objected to.
    *
    * It goes down `/resume`, so every piece of decision machinery is inherited
    * rather than rebuilt: open questions are superseded, a rework round is
@@ -5684,13 +6122,12 @@ export class Orchestrator extends EventEmitter {
      * console's copy union'd over the file — and never from the raw scan. Taking
      * it from the file made every defence in this module last exactly one round:
      * round 1 drops six screenshots, the card puts them back, and then round 2's
-     * snapshot is rebased onto the shrunken file. The prompt then asks the
-     * worker to carry forward the short list, an obedient worker does exactly
-     * that, and the return check compares the result against the shrunken
-     * baseline and finds nothing missing. One fumbled merge followed by one
-     * honest one and everything the operator ticked against is gone from the
-     * card, the gate file and the baseline at once, with no violation raised
-     * anywhere.
+     * snapshot is rebased onto the shrunken file. The prompt then asks the worker
+     * to carry forward the short list, an obedient worker does exactly that, and
+     * the return check compares the result against the shrunken baseline and
+     * finds nothing missing. One fumbled merge followed by one honest one and
+     * everything the operator ticked against is gone from the card, the gate file
+     * and the baseline at once, with no violation raised anywhere.
      *
      * So while a gate C stop is open the console's copy only ever grows. It is
      * retired wholesale when the worker moves past gate C (`#sweepQaState`),
@@ -5750,8 +6187,8 @@ export class Orchestrator extends EventEmitter {
       return out;
     }
     // A resume at capacity parks the words instead of spawning. The round is
-    // still real and still the operator's — it just has not left yet, and the
-    // card says so.
+    // still real and still the operator's — it has just not left yet, and the card
+    // says so.
     if (this.#persisted.pendingResume[key] !== undefined) entry.status = 'queued';
     await this.#save();
     this.#changed();
@@ -5773,9 +6210,10 @@ export class Orchestrator extends EventEmitter {
    * the console has nothing to add. Gate C is different because it has a
    * MECHANICAL half. The page renders `approveLockC` over a row that arrived by
    * SSE, and a row can be a moment old: a rework returning between the paint and
-   * the click resets a tick under a button that still says "Approve gate C".
-   * Recomputing here, from the state on disk at the instant of the decision, is
-   * what makes the lock a lock rather than a rendering of one.
+   * the click resets a
+   * tick under a button that still says "Approve gate C". Recomputing here, from
+   * the state on disk at the instant of the decision, is what makes the lock a
+   * lock rather than a rendering of one.
    *
    * WHAT THIS IS NOT is a security boundary, and it must not be read as one. The
    * server binds loopback with no auth by design, and workers run with
@@ -5783,18 +6221,17 @@ export class Orchestrator extends EventEmitter {
    * also write `state.json`. The check earns its place against staleness and
    * against a mistake in the page, not against the machine it runs on.
    *
-   * The QUIZ half cannot be checked here and deliberately is not faked: their
+   * The QUIZ half cannot be checked here and deliberately is not faked: the
    * answers live in the browser's own storage, because the gate file is rewritten
    * whole on every stop. The page owns that half; this owns the QA half.
    *
    * MISSING BEFORE/AFTER EVIDENCE is not refused here either, and that is a
    * decision rather than an omission. It is a warning they are allowed to take —
-   * *"i don't think you need the degraded gate, but a warning will suffice ...
-   * and i have to explicitly approve the gate"* — so the console's duty is that
-   * it cannot be missed and that taking it is deliberate and recorded, which is
-   * the tick beside Approve and the `Accepted with …` lines this message
-   * carries. Refusing it here would make an honest report of a failed capture a
-   * gate nobody can pass.
+   * the operator wanted a warning rather than a degraded gate, with the gate still
+   * explicitly approved — so the console's duty is that it cannot be missed and
+   * that taking it is deliberate and recorded, which is the tick beside Approve
+   * and the `Accepted with …` lines this message carries. Refusing it here would
+   * make an honest report of a failed capture a gate nobody can pass.
    */
   async approveGateC(issueNumber: number, message: string): Promise<{ ok: boolean; message: string }> {
     const said = message.trim();
@@ -5834,10 +6271,10 @@ export class Orchestrator extends EventEmitter {
     const out = await this.resume(issueNumber, said);
 
     // GATE C IS THE DEV SERVER'S LAST CUSTOMER. Its only two users are the
-    // worker's Playwright capture and the operator's own click-through, and both are
-    // over the moment they approve; nothing between here and the merge needs it,
-    // and one of them sat on port 8083 for a whole day. So the approval takes
-    // its own server down with it — cleanup attached to HIS click, not an
+    // worker's Playwright capture and the operator's own click-through, and both
+    // are over the moment they approve; nothing between here and the merge needs
+    // it, and one of them sat on port 8083 for a whole day. So the approval takes
+    // its own server down with it — cleanup attached to THEIR click, not an
     // autonomous decision, and it goes down the existing guarded path, which
     // still requires the process to be listening on THAT worktree's registered
     // port AND to have its cwd inside THAT worktree. Port 8080 is untouchable
@@ -5861,10 +6298,10 @@ export class Orchestrator extends EventEmitter {
    * Take back a gate decision.
    *
    * The operator approved gate A on an assumption they now disagree with. The
-   * work has moved on, but nothing about that is expensive to correct: the
-   * session is resumable, the worktree is on disk, and the gate history is
-   * append-only. So the worker is sent back to the stage that gate governs, with
-   * the correction in their own words.
+   * work has moved on, but nothing about that is expensive to correct: the session
+   * is resumable, the worktree is on disk, and the gate history is append-only. So
+   * the worker is sent back to the stage that gate governs, with the correction in
+   * their own words.
    *
    * What this is NOT is a code rewind. Nothing already written is undone, no
    * commit is touched and no file is reverted — which is why the composed
@@ -5911,8 +6348,8 @@ export class Orchestrator extends EventEmitter {
     // gate that has not been passed cannot be taken back — there is no decision.
     const rounds = scan.history.filter((h) => h.gate === letter).length;
     // Was this gate actually decided? The console's own ledger, or a worker
-    // history record carrying their words. NOT `state.gatesPassed` — that prose line
-    // is append-only in practice and goes stale, which is what made an audit
+    // history record carrying their words. NOT `state.gatesPassed` — that prose
+    // line is append-only in practice and goes stale, which is what made an audit
     // report three skipped gates they had approved.
     const passed = rounds > 0 || gatesPassedFor(this.#decisions, issueNumber, scan.history).includes(letter);
     if (!passed) {
@@ -5962,8 +6399,8 @@ export class Orchestrator extends EventEmitter {
    * Post a worker's drafted comment — the ONLY thing in this console that writes
    * to GitHub, and only ever from this one method, on the operator's explicit
    * click. The `body` is the text the operator approved (possibly edited); it is
-   * passed byte-exact to the request's issue or PR. Nothing is posted unless
-   * this method is called.
+   * passed byte-exact to the request's issue or PR. Nothing is posted unless this
+   * method is called.
    */
   async postComment(
     issueNumber: number,
@@ -6214,17 +6651,16 @@ export class Orchestrator extends EventEmitter {
    * File the drafted spin-off, on the operator's click. The console's second
    * GitHub write.
    *
-   * There is no reason the console cannot create the issue itself, and creating
-   * it here is what lets the link back to the parent be recorded too.
+   * The operator asked why the console could not create the issue itself, and
+   * pointed out that whatever creates it can also update the status by linking it.
    *
    * The reason a WORKER may not is real and specific — the repo's autoassign
    * workflow stamps the filer as assignee and moves the card to `Ready`, so a
-   * worker-filed issue skips triage and silently becomes the operator's own
-   * assigned work (#4562 arrived that way). But that lands the same whether the
-   * console files it or they press Submit on the prefilled GitHub form, because
-   * it is their account either way. The fence was buying the DECISION, not
-   * protection from the automation, and a click here keeps the decision exactly
-   * where it was.
+   * worker-filed issue skips triage and silently becomes the operator's assigned
+   * work (#4562 arrived that way). But that lands the same whether the console
+   * files it or they press Submit on the prefilled GitHub form, because it is
+   * their account either way. The fence was buying the DECISION, not protection from
+   * the automation, and a click here keeps the decision exactly where it was.
    *
    * The gain is the link. A browser form tells GitHub the new number and nobody
    * else; here the console holds parent and child at once and records both.
@@ -6302,8 +6738,7 @@ export class Orchestrator extends EventEmitter {
     // Stop means stop, and that includes the place in the line — through
     // `#dropFromQueue`, so a decision held for this issue goes with it and is
     // SAID rather than orphaned. It is the same rule `dequeue` states: a later
-    // start must never silently resume with a decision the operator has since
-    // called off.
+    // start must never resume with a decision the operator has since called off.
     const dropped = this.#dropFromQueue(issueNumber);
     const alsoDropped = dropped.held ? ` — ${dropped.note}` : '';
     if (!stopped) {
@@ -6415,8 +6850,8 @@ export class Orchestrator extends EventEmitter {
 
   /**
    * What the queue needs to know to order one waiting ticket: has UAT sent it
-   * back, and what did triage rank it. The order is fixed: UAT failures first,
-   * then P0, P1, P2, P3.
+   * back, and what did triage rank it. The operator asked that the line always
+   * pick UAT failures first, then P0, P1, P2 and P3 in that order.
    *
    * Both facts are read from the SAME two sources the row and the rail read —
    * the issue's labels, and the derived actions feed — so the line the
@@ -6444,9 +6879,9 @@ export class Orchestrator extends EventEmitter {
   /**
    * Is the thing waiting on this issue something the operator SENT BACK?
    *
-   * A sent-back P2 outranks a P1 nobody has looked at yet: a failure already
-   * found needs resolving first and immediately. This is the
-   * fact that key sorts on; `queue.ts` holds the reasoning.
+   * A P2 the operator has sent back outranks a P1 nobody has sent back yet:
+   * failures are resolved first and immediately. This is the fact that key sorts
+   * on; `queue.ts` holds the reasoning.
    *
    * Gated on a live `pendingResume` deliberately. The mark is one boolean beside
    * the parked words and it is the words that are the work — so an entry left
@@ -6466,12 +6901,11 @@ export class Orchestrator extends EventEmitter {
     // already in flight can spawn a worker into a shutdown — or, in a test, into
     // a worktree that has just been deleted.
     if (this.#stopped) return;
-    // An issue whose worker is ALREADY RUNNING is not dispatchable, and saying
-    // so here is what makes asking a question mid-answer safe. Without it, a
-    // free slot (at MAX_ACTIVE ≥ 2) picks that issue, `resume` refuses it with
+    // An issue whose worker is ALREADY RUNNING is not dispatchable, and saying so
+    // here is what makes asking a question mid-answer safe. Without it, a free
+    // slot (at MAX_ACTIVE ≥ 2) picks that issue, `resume` refuses it with
     // "already running", and the held-message error path below deletes the held
-    // question and tells the operator it could not be sent — a question lost to
-    // a race.
+    // question and says it could not be sent — a question lost to a race.
     const waiting = this.#queue.list().filter((n) => !this.#busy(n));
     const decision = selectNext({
       queue: waiting,
@@ -6510,11 +6944,11 @@ export class Orchestrator extends EventEmitter {
     //
     // `resume` is left deliberately open — a close landing mid-run must not
     // strand the session it lands on, and an explicit click on a row that now
-    // says "Closed on GitHub" is the operator deciding. A dispatch is neither.
-    // It begins work on its own, minutes or hours after the queueing, and by
-    // then the ticket can have been signed off: #5697 was closed and QA-passed
-    // on 3 September and sat at the head of this queue the next evening, one
-    // freed slot away from running again.
+    // says "Closed on GitHub" is the operator deciding. A dispatch is neither. It
+    // begins work on its own, minutes or hours after the queueing, and by then the
+    // ticket can have been signed off: #5697 was closed and QA-passed on 3
+    // September and sat at the head of this queue the next evening, one freed
+    // slot away from running again.
     //
     // Dequeued rather than skipped, because the queue is served from the head:
     // a refusal that left it in place would stop everything behind it for ever.
@@ -6533,6 +6967,15 @@ export class Orchestrator extends EventEmitter {
       this.#log(
         `#${issueNumber}: not started — the issue is closed on GitHub. Reopen it there to queue it again.`,
       );
+      // AND THE DISPATCHER SAYS SO IN ITS OWN STATE, not only in the log.
+      //
+      // `selectNext` has already written "starting #5697" into `#dispatchReason`
+      // twenty lines up, and this refusal used to leave that standing: the last
+      // decision the console reported making was to start the thing it had just
+      // declined to start, while the row vanished out of the queue with the held
+      // answer. A drop nobody can see the reason for is the shape of a bug, and
+      // the reason is the whole point of taking it out.
+      this.#dispatchReason = `#${issueNumber} is closed on GitHub — not started, and taken out of the line`;
       this.#changed();
       return;
     }
@@ -6548,7 +6991,7 @@ export class Orchestrator extends EventEmitter {
     // file or not. A reopened gate has none — that gate was passed and its file
     // is long gone — and without this the dispatch fell straight through to the
     // fresh-start path and ran `/issue-pipeline <N>` from the top, silently
-    // dropping the correction the operator had already been promised would run.
+    // dropping the correction the operator had been promised would run.
     const held = this.#persisted.pendingResume[key];
     // AND SO DOES A CHECKPOINT. The third case, and the one that had no branch.
     //
@@ -6608,9 +7051,9 @@ export class Orchestrator extends EventEmitter {
         return;
       }
       // The operator's own words, sent verbatim. Only "Continue." when there is
-      // nothing held, which is a resume nobody typed. A held answer IS their
-      // decision, arriving late. A bare 'Continue.' is the queue picking work
-      // back up and decides nothing.
+      // nothing held, which is a resume nobody typed.
+      // A held answer IS their decision, arriving late. A bare 'Continue.' is the
+      // queue picking work back up and decides nothing.
       //
       // WHICH decision it was is read from the mark parked beside the words, not
       // assumed. `'approved'` was hard-coded here, so every feedback answer that
@@ -6763,9 +7206,8 @@ export class Orchestrator extends EventEmitter {
     await this.#recordRun(ctx, result, pausedMs);
     // NOTHING is stopped here. A worker parking at a gate is precisely when the
     // running app matters most: gate C is the operator's own QA of it, and the
-    // Playwright screenshot capture drives the same dev server. The console
-    // tells them what is running and gives them a button; it does not tidy up
-    // behind them.
+    // Playwright screenshot capture drives the same dev server. The console says
+    // what is running and gives them a button; it does not tidy up behind them.
     await this.poll(); // pick up .gate.json and any state file the worker wrote
     // AFTER the poll, and NOT ONLY inside it. `poll()` returns immediately when
     // one is already running, so on a busy console the line above can be a
@@ -6776,8 +7218,7 @@ export class Orchestrator extends EventEmitter {
   }
 
   /**
-   * Is there a DECISION of the operator's held for this issue, waiting only for
-   * a slot?
+   * Is there a DECISION of the operator's held for this issue, waiting for a slot?
    *
    * A question held in the same place is not one — see the row comment above.
    */
@@ -7093,7 +7534,7 @@ export class Orchestrator extends EventEmitter {
    * And 0600, for the same reason `push-keys.json` is. This file is not a
    * cache: it holds the push subscription's `auth` secret — endpoint plus auth
    * is enough to FORGE notifications to the operator's phone — and every action's
-   * `detail`, which is the first line of a real comment on a private repo.
+   * `detail`, which is the first line of a real comment on the team's work.
    * The mode goes on the TEMP file because `rename` carries the temp file's
    * inode, so a 0644 temp is a 0644 `actions.json` however it is chmodded
    * afterwards; the explicit `chmod` then also repairs a file left at 0644 by a
@@ -7105,6 +7546,60 @@ export class Orchestrator extends EventEmitter {
       await writeFile(tmp, JSON.stringify(this.#notifyStore, null, 2), { mode: 0o600 });
       await chmod(tmp, 0o600);
       await rename(tmp, this.#cfg.actionsFile);
+    } catch {
+      await rm(tmp, { force: true }).catch(() => {});
+    }
+  }
+
+  /**
+   * Put the last successful poll's GitHub reading back into memory, exactly
+   * where a failed poll's fallbacks would have kept it. Nothing else moves:
+   * `#lastPolledAt` becomes the snapshot's own `at`, so the header stamps the
+   * data's real age, and the first failed poll sets `#pollError` beside it to
+   * say why the stamp has stopped moving. A file that is missing, half-written
+   * or another build's shape seeds nothing — that is the pre-snapshot startup,
+   * which was only ever wrong when GitHub then refused to answer.
+   */
+  async #seedFromSnapshot(): Promise<void> {
+    const raw = await readFile(this.#cfg.githubSnapshotFile, 'utf8').catch(() => '');
+    const seed = parseGithubSnapshot(raw);
+    if (!seed) return;
+    this.#issues = seed.issues;
+    this.#openPrs = seed.openPrs;
+    this.#mergedPrs = seed.mergedPrs;
+    // The same join the poll makes, with the same rule: OPEN wins on a branch
+    // collision.
+    this.#prs = new Map([...seed.mergedPrs, ...seed.openPrs]);
+    this.#blockedNotes = seed.blockedNotes;
+    this.#lanes = seed.lanes;
+    this.#lastPolledAt = seed.at;
+  }
+
+  /**
+   * Atomic and 0600, for the same reasons `#saveNotify` is: a reader must get
+   * the old snapshot or the new one, never a truncated one — `parseGithubSnapshot`
+   * treats truncated as "no seed", so losing that race would cost the next
+   * restart its board — and a blocked note's `body` is a real comment on the
+   * team's work. A failed write is survivable: the file just goes on holding
+   * the previous good poll.
+   */
+  async #saveSnapshot(at: string): Promise<void> {
+    const tmp = `${this.#cfg.githubSnapshotFile}.${process.pid}.${(saveSeq += 1)}.tmp`;
+    try {
+      await writeFile(
+        tmp,
+        serializeGithubSnapshot({
+          at,
+          issues: this.#issues,
+          openPrs: this.#openPrs,
+          mergedPrs: this.#mergedPrs,
+          blockedNotes: this.#blockedNotes,
+          lanes: this.#lanes,
+        }),
+        { mode: 0o600 },
+      );
+      await chmod(tmp, 0o600);
+      await rename(tmp, this.#cfg.githubSnapshotFile);
     } catch {
       await rm(tmp, { force: true }).catch(() => {});
     }

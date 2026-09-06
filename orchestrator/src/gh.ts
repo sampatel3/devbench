@@ -11,6 +11,15 @@ const run = promisify(execFile);
  * READ ONLY. Every gh call in this file is a `list`. The console never writes to
  * GitHub — no comments, no labels, no PRs, no merges. Gate E stays human, and so
  * does everything else that leaves this laptop.
+ *
+ * TWO BUDGETS, deliberately. Almost every read here is `gh pr list` / `gh issue
+ * list` / `gh api graphql`, and all of those are GraphQL — one bucket, one
+ * query-cost limiter. On 2026-09-05 that limiter refused the merged-PR read for
+ * hours while its own counter read 5000/5000, and the console, having no other
+ * road, could not learn which PRs had merged. `listRecentMergedPrs` now falls
+ * back to `GET /repos/{repo}/pulls`, which is charged to the REST bucket and was
+ * healthy throughout. Both are GETs; the fallback narrows nothing about what
+ * this file is allowed to do.
  */
 
 export type GhIssue = {
@@ -826,6 +835,31 @@ export async function listOpenPrs(repo: string): Promise<Map<string, PullRequest
 }
 
 /**
+ * ONE EDGE TO THE WINDOW, because two roads that disagree about it lose PRs.
+ *
+ * `merged:>=YYYY-MM-DD` is a DATE qualifier: GitHub matches from 00:00 UTC that
+ * day, so the primary's window runs WIDER than `sinceDaysAgo` by however far
+ * into the day it is now — up to 24 hours. A fallback that dropped on the exact
+ * instant instead would lose merges the primary keeps, and lose them silently:
+ * no page is capped, nothing throws, the banner says "the whole window" and the
+ * row quietly reverts to the checkpoint line. Worked through at 19:47 UTC on
+ * 2026-09-05 — the primary asks for `merged:>=2026-08-22`, and a PR merged
+ * 02:00 that day is inside its window and outside a naive one.
+ *
+ * So the date is computed once and the fallback drops on the instant that date
+ * MEANS. Same reason `keepNewestMerge` is shared: a rule the two roads each
+ * implement separately is a rule they eventually disagree about.
+ */
+function mergedSinceDate(now: Date, sinceDaysAgo: number): string {
+  return new Date(now.getTime() - sinceDaysAgo * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** The instant `mergedSinceDate` names: midnight UTC on that day. */
+function mergedSinceMs(now: Date, sinceDaysAgo: number): number {
+  return Date.parse(`${mergedSinceDate(now, sinceDaysAgo)}T00:00:00Z`);
+}
+
+/**
  * Recently-MERGED PRs, keyed by head branch — the other half of the picture.
  *
  * `listOpenPrs` is the only place the console learned about a PR, so the moment
@@ -853,13 +887,12 @@ export async function listOpenPrs(repo: string): Promise<Map<string, PullRequest
  * console's own account). Same window, same one point, **3** rows instead of 337.
  */
 export function recentMergedPrsArgs(repo: string, author: string, now: Date, sinceDaysAgo: number): string[] {
-  const since = new Date(now.getTime() - sinceDaysAgo * 86_400_000).toISOString().slice(0, 10);
   return [
     'pr', 'list',
     '--repo', repo,
     '--author', author,
     '--state', 'merged',
-    '--search', `merged:>=${since}`,
+    '--search', `merged:>=${mergedSinceDate(now, sinceDaysAgo)}`,
     '--limit', '100',
     // `body` for the closing keyword: a fix folded into another issue's PR is
     // usually read AFTER that PR merged, so the merged map needs it as much as
@@ -868,8 +901,30 @@ export function recentMergedPrsArgs(repo: string, author: string, now: Date, sin
   ];
 }
 
-export async function listRecentMergedPrs(repo: string, author: string, sinceDaysAgo = 14): Promise<Map<string, PullRequest>> {
-  const out = await gh(recentMergedPrsArgs(repo, author, new Date(), sinceDaysAgo));
+/**
+ * Branch reuse is real, and the newest merge on a branch is the one that
+ * matters: an older merged PR on the same branch must not outrank it.
+ *
+ * ONE rule, shared by both readers below, for the reason the omnibus shares one
+ * fragment between its two issue searches — the GraphQL path and the REST
+ * fallback build the same map, and a tie-break they each implemented separately
+ * is a tie-break they would eventually disagree about. A row would then answer
+ * differently depending on which read answered, which is exactly the confusion
+ * the fallback exists to remove.
+ */
+function keepNewestMerge(map: Map<string, PullRequest>, branch: string, pr: PullRequest): void {
+  const held = map.get(branch);
+  if (held && Date.parse(held.mergedAt ?? '') >= Date.parse(pr.mergedAt ?? '')) return;
+  map.set(branch, pr);
+}
+
+/** `gh` itself, as a seam. Both readers take one so a test can answer them
+ *  without a network, and so the fallback can be driven through the same fake
+ *  that made the primary throw. Nothing here can do anything `gh` cannot. */
+type GhRead = (args: string[]) => Promise<string>;
+
+/** What the primary read produced, turned into the map. Pure. */
+function parseMergedPrList(out: string): Map<string, PullRequest> {
   const raw = JSON.parse(out) as Array<{
     number: number;
     url: string;
@@ -883,11 +938,7 @@ export async function listRecentMergedPrs(repo: string, author: string, sinceDay
   const map = new Map<string, PullRequest>();
   for (const p of raw) {
     if (!p.headRefName) continue;
-    // Branch reuse is real, and the newest merge on a branch is the one that
-    // matters: an older merged PR on the same branch must not outrank it.
-    const held = map.get(p.headRefName);
-    if (held && Date.parse(held.mergedAt ?? '') >= Date.parse(p.mergedAt ?? '')) continue;
-    map.set(p.headRefName, {
+    keepNewestMerge(map, p.headRefName, {
       number: p.number,
       url: p.url,
       state: p.state || 'MERGED',
@@ -898,6 +949,288 @@ export async function listRecentMergedPrs(repo: string, author: string, sinceDay
     });
   }
   return map;
+}
+
+// ------------------------------------------ the same read, off the REST budget
+
+/**
+ * THE REST FALLBACK, and the day the console went blind.
+ *
+ * On 2026-09-05 GitHub rejected `recentMergedPrsArgs` with "API rate limit
+ * already exceeded" while every documented counter read FULL — `graphql
+ * 5000/5000` — and a cheap GraphQL query (`{viewer{login}}`) answered fine. That
+ * is a query-COST / secondary limit, and `GET /rate_limit` never shows it. It
+ * held for hours.
+ *
+ * `gh pr list` is GraphQL, so it was the console's only road to which PRs had
+ * merged, and one cost limit closed it: 21 issues whose PRs had merged and were
+ * sitting in the QA lane lost their PR, and the board went wrong all at once.
+ *
+ * REST is a SEPARATE budget and it was healthy the whole time — measured the same
+ * hour, `core 4822/5000`. This is that road:
+ *
+ *     GET /repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100
+ *
+ * WHAT IT COSTS IN HONESTY, field by field, against what the primary builds:
+ *
+ *  - `number`, `title`, `html_url`, `draft`, `merged_at`, `head.ref` and `body`
+ *    are all on the list row — every input the primary map is built from, so the
+ *    entries are the SAME shape with the same key. Verified live on 2026-09-05.
+ *  - `state` arrives as the literal `closed` for everything on this endpoint,
+ *    merged or not. It is normalised to `MERGED` only for rows this filter kept,
+ *    and the filter keeps a row on `merged_at` being non-null — so `MERGED` is
+ *    read off GitHub, never assumed from the endpoint.
+ *  - `reviewDecision`, labels/`changesRequested`, `reviewRequests` and
+ *    `latestReviews` are NOT on a REST list row. They are not on the primary's
+ *    map either — `recentMergedPrsArgs` never asks for them — so the fallback
+ *    loses nothing here. It is the right call twice over: a merged PR is closed,
+ *    and a review that can no longer block anything is not a fact the board acts
+ *    on. They stay absent rather than being filled with a plausible value.
+ *  - `checklist` is likewise absent on both, though `body` is right there. The
+ *    fallback deliberately does NOT read it: the two paths have to produce the
+ *    same map, and a fallback that quietly knows MORE than the primary makes a
+ *    row's content depend on which read answered.
+ *
+ *  - `number` and `html_url` are typed optional here and required on the map
+ *    entry, so a row missing either is DROPPED rather than defaulted. `#0`
+ *    linking nowhere is a claim, and a wrong one; an unanswered branch is not.
+ *
+ * WHAT IT COSTS IN CALLS. REST has no `author:` filter, so the author test is
+ * applied here, on rows the repo returns whole — case-insensitively, and after
+ * expanding `@me`, because those are two things GitHub was doing for the primary
+ * that a literal string compare would not. Sorting by `updated` descending makes
+ * the walk bounded rather than a walk of history: `updated_at` is never older
+ * than `merged_at`, so the first row whose `updated_at` falls outside the window
+ * ends the paging — nothing after it can be inside. A quiet repo answers in one
+ * page.
+ *
+ * WHAT IT CANNOT PROMISE. The walk is bounded by pages as well as by the window
+ * (see `REST_PAGE_CAP`), and the page cap can bite first. When it does, the map
+ * is short and `capped` says so all the way up: the banner reads as a warning
+ * and every row the short map could not answer for says it cannot say, rather
+ * than falling through to "checkpoint — stopped after stage 8". A degraded read
+ * that stands in for a whole one is the 2026-09-05 board again, arrived at from
+ * the other direction.
+ */
+const REST_PAGE_SIZE = 100;
+
+/**
+ * TEN PAGES, and what that number is and is NOT.
+ *
+ * It is a bound on COST, not a measurement of the repo. The population it walks
+ * is every closed PR the repo touched inside the window — other people's, the
+ * closed-and-never-merged, and old PRs that one comment dragged back to the top
+ * of a `sort=updated` list. The only number this repo has ever measured is
+ * **337** PRs merged repo-wide in 14 days (2026-08-12), and closed-and-touched
+ * is strictly larger than that by two categories nobody has counted. An earlier
+ * draft of this file put the cap at 500 rows and cited the 337 as headroom; that
+ * was the merged count doing work it cannot do, so the number is set on the
+ * other side of the trade instead: ten pages is ten REST points out of ~5000 an
+ * hour on a budget the console barely touches, and it only ever spends them on
+ * the rare poll the primary road is shut.
+ *
+ * When the cap does fire the read is SHORT, short at the old end of the window,
+ * and — this is the part that matters — the console treats it as a read it could
+ * not complete. It does not quietly stand in for a whole one: see
+ * `#prsUnreadable` in orchestrator.ts, where a capped map sends every row it
+ * could not answer for to `unreadable` rather than to the checkpoint line. The
+ * alternative to a cap is worse than a short read: an uncapped loop against the
+ * second budget is how a fallback turns one blinded read into two.
+ */
+const REST_PAGE_CAP = 10;
+
+export function restMergedPrsArgs(repo: string, page: number): string[] {
+  return [
+    'api',
+    // Explicit, though `gh api` already defaults to it. Every call in this file
+    // is a list, and the method is the one word that says so out loud.
+    '--method', 'GET',
+    `repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${REST_PAGE_SIZE}&page=${page}`,
+  ];
+}
+
+type RestPage = {
+  /** Merged, ours, inside the window — ready for the map. */
+  entries: Array<[string, PullRequest]>;
+  /** A row on this page is older than the window. Sorted by `updated`
+   *  descending, so nothing after it can be inside: stop. */
+  pastWindow: boolean;
+  /** How many rows the page held at all, window or not. A short page is the
+   *  last page. */
+  rows: number;
+};
+
+/** One page, turned into map entries and a verdict on whether to ask for the
+ *  next. Pure — every judgement it makes is on the row in front of it. */
+function parseRestMergedPage(out: string, author: string, sinceMs: number): RestPage {
+  const raw = JSON.parse(out) as Array<{
+    number?: number;
+    html_url?: string;
+    title?: string;
+    draft?: boolean;
+    merged_at?: string | null;
+    updated_at?: string | null;
+    body?: string | null;
+    user?: { login?: string } | null;
+    head?: { ref?: string } | null;
+  }>;
+  const entries: Array<[string, PullRequest]> = [];
+  let pastWindow = false;
+  for (const p of raw) {
+    const updatedMs = Date.parse(p.updated_at ?? '');
+    // A row we cannot date does not end the paging: unreadable is not old.
+    if (Number.isFinite(updatedMs) && updatedMs < sinceMs) pastWindow = true;
+    const branch = p.head?.ref ?? '';
+    const mergedAt = p.merged_at ?? null;
+    const mergedMs = Date.parse(mergedAt ?? '');
+    // Closed and never merged is not a merge. A stranger's PR is not ours. A
+    // merge older than the window is not in the window — and the endpoint sorts
+    // by `updated`, so one can ride in on a comment long after the fact.
+    if (!branch || mergedAt === null) continue;
+    // Case-insensitively, because the primary does not compare at all: it hands
+    // `--author` to GitHub, whose logins are case-insensitive. A row that the
+    // search road keeps and this road drops is a PR that vanishes on the poll
+    // GitHub is already having a bad day.
+    if ((p.user?.login ?? '').toLowerCase() !== author.toLowerCase()) continue;
+    if (!Number.isFinite(mergedMs) || mergedMs < sinceMs) continue;
+    // NO PR WITHOUT AN IDENTITY. A row missing `number` or `html_url` cannot be
+    // rendered as anything true — `#0`, linking nowhere — and a map entry is a
+    // positive claim that this branch's work merged as that PR. Dropping the row
+    // leaves the branch unanswered, which is the honest shape of not knowing.
+    if (typeof p.number !== 'number' || !p.html_url) continue;
+    entries.push([
+      branch,
+      {
+        number: p.number,
+        url: p.html_url,
+        // Measured, not assumed: this row has a `merged_at`.
+        state: 'MERGED',
+        title: p.title ?? '',
+        isDraft: p.draft ?? false,
+        mergedAt,
+        closes: closesIssues(p.body),
+      },
+    ]);
+  }
+  return { entries, pastWindow, rows: raw.length };
+}
+
+/**
+ * `@me` IS NOT A LOGIN, and the fallback is the only road that has to know it.
+ *
+ * `--author @me` is gh's own token for the account the token belongs to, and the
+ * primary never has to expand it — GitHub does, server-side. The REST list has
+ * no author filter, so this road compares against `user.login`, which is never
+ * literally `@me`. Configured as `ASSIGNEE=@me` (see config.ts) the primary
+ * would keep working and the fallback would match nothing: an EMPTY map, no
+ * error, no cap — the worst shape there is, because it looks like a complete
+ * read of a repo where nothing merged.
+ *
+ * So it is expanded, with a read, on the healthy budget, and only when it has
+ * to be. A failure to expand it throws rather than filtering on a value that
+ * cannot match: the caller then reports both roads down, and no row claims to
+ * know where its PR stands. Read-only, like everything else here.
+ */
+async function resolveRestAuthor(author: string, read: GhRead): Promise<string> {
+  if (author !== '@me') return author;
+  const login = (JSON.parse(await read(['api', '--method', 'GET', 'user'])) as { login?: string }).login ?? '';
+  if (!login) throw new Error('could not expand @me to a login');
+  return login;
+}
+
+/** The merged map off the REST budget. Read-only: `GET`, and nothing else. */
+async function listMergedPrsViaRest(
+  repo: string,
+  configuredAuthor: string,
+  sinceDaysAgo: number,
+  now: Date,
+  read: GhRead,
+): Promise<{ prs: Map<string, PullRequest>; capped: boolean }> {
+  const author = await resolveRestAuthor(configuredAuthor, read);
+  // The same instant the primary's `merged:>=` date means, not a fresh one:
+  // see `mergedSinceDate`.
+  const sinceMs = mergedSinceMs(now, sinceDaysAgo);
+  const map = new Map<string, PullRequest>();
+  let capped = true;
+  for (let page = 1; page <= REST_PAGE_CAP; page++) {
+    const { entries, pastWindow, rows } = parseRestMergedPage(await read(restMergedPrsArgs(repo, page)), author, sinceMs);
+    for (const [branch, pr] of entries) keepNewestMerge(map, branch, pr);
+    // Either the window ended or the repo did. Both mean the read is WHOLE, and
+    // only running out of pages leaves it short.
+    if (pastWindow || rows < REST_PAGE_SIZE) {
+      capped = false;
+      break;
+    }
+  }
+  return { prs: map, capped };
+}
+
+/**
+ * What the console did instead of the read it wanted, when it could not have it.
+ * Handed to `onFallback` and to nobody else — a degraded read that says nothing
+ * is the 2026-09-05 incident with a happier ending and the same silence.
+ */
+export type MergedPrsFallback = {
+  /** Why the primary read was refused, first line only. */
+  because: string;
+  /** How many merged PRs REST put in the map. */
+  found: number;
+  /** The paging ran out of pages before it ran out of window, so a merge early
+   *  in the window may be missing. */
+  capped: boolean;
+};
+
+/** A `gh` failure's one useful line. The rest is the CLI's own noise. */
+const firstLine = (e: unknown): string =>
+  (e instanceof Error ? e.message : String(e)).split('\n')[0] ?? 'no reason given';
+
+export type MergedPrsOptions = {
+  sinceDaysAgo?: number;
+  /** Called when, and only when, REST answered a read GraphQL refused. */
+  onFallback?: (note: MergedPrsFallback) => void;
+  /** The exec seam. Tests pass a fake; nothing in the console does. */
+  read?: GhRead;
+  /** The clock, so a test can stand on the window edge. Both roads read the
+   *  same one — the whole point of `mergedSinceDate`. */
+  now?: Date;
+};
+
+/**
+ * GraphQL first, REST second, and a throw only when both are gone.
+ *
+ * The order is not a preference between two equals. `gh pr list` is one cheap
+ * request that GitHub filters by author server-side; REST is up to five requests
+ * the console filters itself. The fallback is for the hours the first road is
+ * closed, and it stays a fallback so a healthy console never pays for it.
+ *
+ * A caller that passes `onFallback` learns which road answered. One that does
+ * not gets the map either way, which is the point — every read downstream of
+ * this is about PRs, not about GitHub's rate limiter.
+ */
+export async function listRecentMergedPrs(
+  repo: string,
+  author: string,
+  opts: MergedPrsOptions = {},
+): Promise<Map<string, PullRequest>> {
+  const { sinceDaysAgo = 14, onFallback, read = gh, now = new Date() } = opts;
+  try {
+    return parseMergedPrList(await read(recentMergedPrsArgs(repo, author, now, sinceDaysAgo)));
+  } catch (primary) {
+    const because = firstLine(primary);
+    let viaRest;
+    try {
+      viaRest = await listMergedPrsViaRest(repo, author, sinceDaysAgo, now, read);
+    } catch (fallback) {
+      // BOTH ROADS SHUT. It throws, exactly as it did before this fallback
+      // existed, so the caller still records a failed read and no row claims to
+      // know where its PR stands. Both reasons ride on the message: which one is
+      // down is the diagnosis, and "rate limited, and the other budget 404s" is
+      // a different morning from "rate limited".
+      throw new Error(`${because} — and the REST fallback failed too: ${firstLine(fallback)}`);
+    }
+    onFallback?.({ because, found: viaRest.prs.size, capped: viaRest.capped });
+    return viaRest.prs;
+  }
 }
 
 // ----------------------------------------------- one issue's project board card
@@ -961,8 +1294,17 @@ query($owner:String!,$name:String!,$number:Int!){
         name field { ... on ProjectV2SingleSelectField { id options { id name } } } } }
     } } } } }`;
 
-/** Null on any failure — a write that cannot read its target must not proceed. */
-export async function readBoardItem(repo: string, issue: number, projectNumber: number): Promise<BoardItem | null> {
+/**
+ * Null on any failure — a write that cannot read its target must not proceed.
+ *
+ * A null `projectNumber` is one of those failures and the cheapest one: it is
+ * `BOARD_PROJECT_NUMBER` unset, which means there is no board (see config.ts).
+ * Answering it here rather than at the call site keeps the "no board" case on
+ * the same road as every other unreadable card — `decideBoardMove` fails closed
+ * on a null card — instead of asking every caller to remember the setting.
+ */
+export async function readBoardItem(repo: string, issue: number, projectNumber: number | null): Promise<BoardItem | null> {
+  if (projectNumber === null) return null;
   const [owner, name] = repo.split('/');
   if (!owner || !name) return null;
   try {

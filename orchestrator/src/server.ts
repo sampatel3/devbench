@@ -340,18 +340,16 @@ export function createServer(
 
   /**
    * TAKE ONE OR MORE SENTRY ERRORS: raise the linked GitHub ticket, then
-   * assign the error in Sentry. One click, in his words:
-   *
-   *   *"i should be able to click on one or multiple sentry tickets and clikc
-   *   a button to assign them to me - this should raise a gituhb issue and
-   *   ensure it's loinked to the sentry isseu and assign that issue to me plus
-   *   give it a lable of 'needs-traige'"*
+   * assign the error in Sentry. What the operator asked for is one click: select
+   * one or more Sentry errors, claim them, and have each one raise a GitHub
+   * issue that links back to the Sentry error, is assigned to them, and carries
+   * the `needs-triage` label.
    *
    * THE TICKET IS RAISED FIRST, deliberately. If the ticket fails, nothing has
    * happened and the row is exactly as it was; if the Sentry assignment failed
    * first instead, the ticket would still need raising and the panel would show
-   * an error he had apparently claimed but not ticketed — which is the state
-   * this whole call exists to stop him ending up in.
+   * an error they had apparently claimed but not ticketed — which is the state
+   * this whole call exists to stop them ending up in.
    *
    * Each id is decided on its own: one row that turns out to be ticketed
    * already takes itself out and the rest go through, because refusing the
@@ -627,7 +625,7 @@ export function createServer(
   app.post('/api/issues/:n/resume', async (req, res) => {
     const message = String((req.body as { message?: unknown })?.message ?? '').trim();
     if (!message) return res.status(400).json({ ok: false, message: 'a resume needs a message' });
-    // `decision` says which button he pressed, so the ledger records whether the
+    // `decision` says which button was pressed, so the ledger records whether the
     // gate was passed or the work sent back. Absent defaults to approved, which is
     // what every existing caller means.
     const raw = (req.body as { decision?: unknown })?.decision;
@@ -672,6 +670,23 @@ export function createServer(
     const question = String((req.body as { question?: unknown } | undefined)?.question ?? '').trim();
     if (!question) return res.status(400).json({ ok: false, message: 'a question needs words' });
     const out = await orch.ask(Number(req.params.n), question);
+    res.status(out.ok ? 200 : 409).json(out);
+  });
+
+  /**
+   * TAKE THE MISSING SCREENSHOTS AGAIN, on your click.
+   *
+   * The automatic pass runs inside the poll that first sees a gate C, so this
+   * button is for the second time round: the dev server was down, the baseline
+   * was not up yet, or you want the pair retaken. There is no body — WHICH
+   * captures are owed is computed from the gate file, never sent by the page,
+   * which is what keeps the browser from being able to name a destination.
+   *
+   * It writes into a worktree, so the orchestrator refuses it while that
+   * worktree's worker is running.
+   */
+  app.post('/api/issues/:n/capture', async (req, res) => {
+    const out = await orch.captureShots(Number(req.params.n));
     res.status(out.ok ? 200 : 409).json(out);
   });
 
@@ -1105,7 +1120,7 @@ export function createServer(
   /**
    * Prove the whole chain, on a click: keys, subscription, relay, and the
    * phone's own permission. Four things that each fail silently and only matter
-   * when he is away from the desk, so there has to be a way to ask.
+   * when the operator is away from the desk, so there has to be a way to ask.
    *
    * It carries no work data — not a title, not a number. Still read-only as far
    * as GitHub is concerned: this posts to a push endpoint, never to GitHub.

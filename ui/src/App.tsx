@@ -38,13 +38,14 @@ import {
 } from './quiz';
 import {
   ORANGE,
-  awaitingTriage,
   waitingOnYou,
   bandLabel,
+  isClosedIssue,
   isParked,
   isPriorityLabel,
   isTriageLabel,
   isUatFail,
+  needsTriage,
   priorityOf,
   selfFiledNeedsTriage,
   sortIssues,
@@ -139,6 +140,10 @@ const CHIP_LABEL: Record<WorkerStatus, string> = {
   'pr-merged': 'merged',
   done: 'closed',
   checkpoint: 'checkpoint',
+  // Pairs with the "GitHub read HH:MM" stamp in the header, which is the other
+  // half of the same fact: the stamp has stopped moving, and this is the row it
+  // stopped moving on.
+  unreadable: 'GitHub unread',
   failed: 'failed',
 };
 
@@ -152,13 +157,19 @@ const CHIP_LABEL: Record<WorkerStatus, string> = {
  * so it is the same fact and is never given a chip of its own. An issue carrying
  * a priority AND a stale `needs-triage` shows its priority: the more specific
  * answer wins, and the pill stays out of the way.
+ *
+ * It takes the ROW rather than the labels, because whether there is a triage
+ * question left is a question about the row: see `needsTriage`.
  */
-function Pill({ labels, done }: { labels: string[]; done?: boolean }) {
-  const p = priorityOf(labels);
-  // Nothing left to triage on a closed issue. The synthesized rows for closed
-  // work carry no labels at all, so without this they read "needs triage" —
-  // asking the operator to rank something QA already signed off and closed.
-  if (done) return null;
+function Pill({ row }: { row: Pick<IssueRow, 'labels' | 'status' | 'orphan'> }) {
+  const p = priorityOf(row.labels);
+  // NOTHING LEFT TO TRIAGE ON A CLOSED ISSUE, and closed is `isClosedIssue`
+  // rather than `status === 'done'`. The status is decided by the loudest thing
+  // on the row, so a worker parked at a gate on a ticket QA closed reads
+  // `at-gate` and used to keep its "needs triage" pill — 33 of 105 closed issues
+  // still carried the label, and the console cannot remove one (it never writes
+  // labels), so it stops asking instead.
+  if (isClosedIssue(row)) return null;
   return (
     <span
       className={`prio ${p.toLowerCase()}`}
@@ -447,6 +458,17 @@ function OrphanCard({ row }: { row: IssueRow }) {
           </>
         )}
       </p>
+      {/* WHAT QA HAD SAID AT THE CLOSE, in the server's own words.
+          UNDER the close line because it qualifies it: "nothing is waiting for
+          this work" is only the whole truth when somebody verified the work, and
+          28 of 105 closures carried no QA verdict at all. It renders only where
+          the server established one — an absent record means the console never
+          looked, and the card says nothing rather than guessing. A `pass` reads
+          quiet; everything else earns the caution treatment, including the close
+          made over a verdict that was still standing. */}
+      {o.reason === 'closed' && row.closeVerdict && (
+        <p className={row.closeVerdict.verdict === 'pass' ? 'note' : 'note caution'}>{row.closeVerdict.line}</p>
+      )}
     </div>
   );
 }
@@ -2242,13 +2264,18 @@ function Spine({ row, onDone }: { row: IssueRow; onDone: (m: string) => void }) 
  * are fetched on demand and shown as expandable text. Every file comes through
  * the fenced, read-only evidence endpoint.
  */
-function Evidence({ issue, items }: { issue: number; items: EvidenceItem[] }) {
-  if (items.length === 0) return null;
+function Evidence({ issue, items, warning }: { issue: number; items: EvidenceItem[]; warning?: string | null }) {
+  // An empty box used to mean "no evidence" and "the manifest was unreadable"
+  // alike. #4698 was the second of those — twelve real screenshots on disk,
+  // every entry written as a bare string, nothing rendered, and the gate
+  // approved without them. A refusal now renders even when nothing else does.
+  if (items.length === 0 && !warning) return null;
   return (
     <div className="evidence">
       <p className="note" style={{ margin: '0 0 6px' }}>
         Evidence — the same artifacts that go in the PR, for you to check now:
       </p>
+      {warning && <p className="note warn-line">{warning}</p>}
       {items.map((it, i) => (
         <EvidenceOne key={i} issue={issue} item={it} />
       ))}
@@ -2333,7 +2360,11 @@ function GateExchange({ record }: { record: GateHistoryRecord }) {
       <p className="decision">
         <strong>You decided:</strong> {record.decision ?? '(no decision recorded)'}
       </p>
-      <Evidence issue={record.issue} items={record.evidence} />
+      <Evidence issue={record.issue} items={record.evidence} warning={record.evidenceWarning} />
+      {/* A line of the audit trail the parser refused. It is filed against the
+          round it came after, because position in an append-only file is the
+          only thing a rejected line still tells us. */}
+      {record.quarantined && <p className="note warn-line">{record.quarantined}</p>}
     </div>
   );
 }
@@ -3095,7 +3126,7 @@ function QaHalf({
       <p className="qa2-label">{label}</p>
       <p className="qa2-text">{text ? <Clamp text={text} limit={18} /> : <QaChip text={empty} warn={warn} />}</p>
       {unviewable ? (
-        // The filename, and the link, both kept. He asked for evidence and the
+        // The filename, and the link, both kept. Evidence was asked for and the
         // worker named a file: the name is the thing to quote back at it, and
         // the link answers WHY in plain text from the evidence route itself
         // ("not found: could not open the evidence file", or a refusal).
@@ -3280,6 +3311,13 @@ function QaStepBlock({
   // Which halves named a capture the console could not find. Absent reads as
   // none: an older snapshot, or a step no scan has stamped, accuses nobody.
   const gone = step.goneShots ?? [];
+  // THE PAIR THAT IS THE SAME PICTURE TWICE. The operator caught one by eye — a
+  // before and an after that plainly looked the same — and byte-identical is the
+  // only version of that claim the console can make without judgement: it is
+  // either a step pointed at a screen the change does not touch, or a baseline
+  // server running the same code. Either way it is not evidence of anything, and
+  // the step it is on is where that has to be said.
+  const identical = row.captureReport?.identical?.includes(step.id) ?? false;
 
   return (
     <li className={`qa2-step qa2-step--${state}`}>
@@ -3328,8 +3366,11 @@ function QaStepBlock({
         />
       </div>
 
-      {(fixed || edited || missing) && (
+      {(fixed || edited || missing || identical) && (
         <p className="qa2-flags">
+          {identical && (
+            <QaChip text="The before and after are the same picture, byte for byte — this pair proves nothing" warn />
+          )}
           {/* The worker's last rewrite of .gate.json does not contain this step.
               It is here, with your tick, because the console kept its own copy —
               and it still counts towards Approve, so a rework cannot shrink the
@@ -3455,6 +3496,7 @@ function ManualQaCard({
   warningsShownAbove?: boolean;
 }) {
   const [sending, setSending] = useState(false);
+  const [capturing, setCapturing] = useState(false);
   const qa = row.gateManualQa;
   if (!qa) return null;
   const app = qa.appUrl ?? (row.port ? `http://localhost:${row.port}` : null);
@@ -3466,6 +3508,13 @@ function ManualQaCard({
     setSending(true);
     const out = await post(`/api/issues/${row.number}/qa-rework`);
     setSending(false);
+    onDone(out.message);
+  };
+
+  const capture = async () => {
+    setCapturing(true);
+    const out = await post(`/api/issues/${row.number}/capture`);
+    setCapturing(false);
     onDone(out.message);
   };
 
@@ -3516,6 +3565,43 @@ function ManualQaCard({
         </ol>
       )}
       {qa.steps.length === 0 && <p className="note err">The click-script has no steps. Ask for it again.</p>}
+
+      {/* THE CONSOLE'S OWN CAPTURES. It already ran once, by itself, in the poll
+          that first saw this gate — the requirement is that they arrive with no
+          human intervention at all, and a button that has to be pressed to get a
+          screenshot is the thing being replaced. This block exists for the
+          second time round: the dev server was down, the baseline was not up, or
+          the pair wants retaking. Whatever happened is stated in one line,
+          including when the answer is that nothing could be captured. */}
+      {allowRework && (
+        <div className="qa2-capture">
+          {row.captureReport ? (
+            <>
+              <p className={row.captureReport.ok ? 'note' : 'note err'}>
+                {row.captureReport.line} <span className="qa2-capture-at">{stamp(row.captureReport.at)}</span>
+              </p>
+              {(row.captureReport.notes ?? []).length > 0 && (
+                <ul className="qa2-capture-notes">
+                  {(row.captureReport.notes ?? []).map((n, i) => (
+                    <li key={i} className="note">
+                      {n}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : (
+            <p className="note">The console has not taken any screenshots for this gate.</p>
+          )}
+          <button disabled={busy || capturing} onClick={() => void capture()}>
+            {capturing ? 'Capturing…' : 'Capture shots'}
+          </button>
+          <p className="note">
+            Drives your dev server headlessly and files the pictures under the plans tree. Only a step with a{' '}
+            <code>route</code> can be driven; nothing else is touched.
+          </p>
+        </div>
+      )}
 
       {/* Failing a step does NOT dispatch. You work down the list ticking, and
           ONE button sends everything you failed in one round — two sequential
@@ -4069,10 +4155,14 @@ function GateCCard({ row, onDone }: { row: IssueRow; onDone: (m: string) => void
   if (!row.gate) return null;
   const g = row.gate;
 
-  /** A DECISION: approve, feedback, or "your gate deliverable is incomplete". */
-  const send = async (message: string) => {
+  /** A DECISION: approve, feedback, or "your gate deliverable is incomplete".
+   *  The ledger records which button this was, so the caller says so — the
+   *  console-composed nags carry their own marker, but the operator's typed
+   *  feedback is just their words, and without the flag it was filed as an
+   *  approval. */
+  const send = async (message: string, decision: 'approved' | 'feedback' = 'approved') => {
     setBusy(true);
-    const out = await post(`/api/issues/${row.number}/resume`, { message });
+    const out = await post(`/api/issues/${row.number}/resume`, { message, decision });
     setBusy(false);
     if (out.ok) setText('');
     onDone(out.message);
@@ -4201,6 +4291,11 @@ function GateCCard({ row, onDone }: { row: IssueRow; onDone: (m: string) => void
 
       <section className="gate-sec">
         <h3>1 · Evidence — what the worker did</h3>
+        {/* What the manifest listed and the console would not serve. Above the
+            grid, because the thing it is telling you is that the grid is short:
+            #4698 showed an empty box over twelve real screenshots and was
+            approved on it. Server-composed — see `GateFile.evidenceWarning`. */}
+        {g.evidenceWarning && <p className="note warn-line">{g.evidenceWarning}</p>}
         {shots.length > 0 ? (
           <>
             <p className="note" style={{ margin: '0 0 4px' }}>
@@ -4375,7 +4470,7 @@ function GateCCard({ row, onDone }: { row: IssueRow; onDone: (m: string) => void
               rides under them. Feedback here always sends the worker back to
               rewrite .gate.json, which is exactly when the evidence box is at
               risk. */}
-          <button disabled={!canResume || busy || !said} onClick={() => void send(feedbackCPrompt(text))}>
+          <button disabled={!canResume || busy || !said} onClick={() => void send(feedbackCPrompt(text), 'feedback')}>
             Send feedback
           </button>
           {g.stoppedAt && <span className="note">stopped {new Date(g.stoppedAt).toLocaleString()}</span>}
@@ -4586,7 +4681,7 @@ export function DraftedWrites({ row }: { row: IssueRow }) {
           </p>
           {brd.why && <p className="note">{brd.why}</p>}
           <a className="btn-link" href={brd.boardUrl} target="_blank" rel="noreferrer">
-            Open the Shape board
+            Open the project board
           </a>
         </div>
       )}
@@ -4608,9 +4703,9 @@ function GateCard({ row, onDone }: { row: IssueRow; onDone: (m: string) => void 
   if (!row.gate) return null;
   const g = row.gate;
 
-  const send = async (message: string) => {
+  const send = async (message: string, decision: 'approved' | 'feedback' = 'approved') => {
     setBusy(true);
-    const out = await post(`/api/issues/${row.number}/resume`, { message });
+    const out = await post(`/api/issues/${row.number}/resume`, { message, decision });
     setBusy(false);
     if (out.ok) setText('');
     onDone(out.message);
@@ -4680,7 +4775,7 @@ function GateCard({ row, onDone }: { row: IssueRow; onDone: (m: string) => void 
       )}
 
       {/* 1. What the agent DID, with its own screenshots. */}
-      <Evidence issue={row.number} items={row.gateEvidence} />
+      <Evidence issue={row.number} items={row.gateEvidence} warning={g.evidenceWarning} />
 
       {/* 2. How to check it yourself, with links you can actually click. A
           click-script outside gate C is not something the skill produces, but if
@@ -4749,7 +4844,7 @@ function GateCard({ row, onDone }: { row: IssueRow; onDone: (m: string) => void 
             identical filled buttons side by side is what made them confusable. */}
         <button
           disabled={!canResume || busy || !said}
-          onClick={() => void send(feedbackPrompt(text))}
+          onClick={() => void send(feedbackPrompt(text), 'feedback')}
         >
           Send feedback
         </button>
@@ -5593,7 +5688,13 @@ function Detail({
   // `needs-triage` while the pill is reading "needs triage". A `needs-triage`
   // left on a RANKED issue stays in the line — the pill has stopped speaking for
   // it, and a half-finished triage is worth seeing.
-  const saidByPill = (l: string) => isPriorityLabel(l) || (isTriageLabel(l) && awaitingTriage(row.labels));
+  //
+  // `needsTriage` and not `awaitingTriage`, so the same rule holds on a CLOSED
+  // row: the pill is silent there by design, and reading the labels instead of
+  // the row would have hidden the label as well — the console would have stopped
+  // asking and stopped showing, which is a tidy-up rather than an answer. The
+  // label is real and stays in the line; the console just does not act on it.
+  const saidByPill = (l: string) => isPriorityLabel(l) || (isTriageLabel(l) && needsTriage(row));
   const other = row.labels.filter((l) => !saidByPill(l));
   const act = async (path: string) => {
     setBusy(true);
@@ -5628,7 +5729,7 @@ function Detail({
       <h2 style={{ fontSize: 17, margin: '4px 0 2px' }}>{row.title}</h2>
       <div className="detail-status">
         <UatChip row={row} />
-        <Pill labels={row.labels} done={row.status === 'done'} />
+        <Pill row={row} />
         <Provenance row={row} />
         <ParkedChip row={row} />
         <Chip row={row} />
@@ -6899,8 +7000,8 @@ function StaleBundleBanner() {
     // kept feeding it current data and the old bundle kept rendering it, quietly
     // dropping every field it did not know about: the review line and the
     // pre-merge checklist on #4344 were both being sent and both invisible, so
-    // "PR open" was the whole story the page could tell. He asked where the
-    // visibility was. It was in the payload, thrown away by stale code.
+    // "PR open" was the whole story the page could tell. The operator asked where
+    // the visibility had gone. It was in the payload, thrown away by stale code.
     //
     // A dashboard that silently hides new information is worse than one that is
     // down, so this is worth a request every half minute against localhost.
@@ -7843,7 +7944,7 @@ function Dashboard({
                       {/* First, before the rank: a verdict on shipped work
                           outranks whatever triage decided. */}
                       <UatChip row={r} />
-                      <Pill labels={r.labels} done={r.status === 'done'} />
+                      <Pill row={r} />
                       {/* No `Provenance` here. The "self-filed" pill said one
                           thing — that this came from this machine — and the
                           handle in the next column says it better, because it
@@ -8302,6 +8403,16 @@ export default function App() {
           </div>
         ))}
       {state.pollError && <div className="banner warn">{state.pollError}</div>}
+      {/* Quiet when the read came back WHOLE — it succeeded and the board below
+          is correct, and a warning over a correct board teaches you to ignore
+          warnings. `warn` when it came back short, because then the board below
+          has rows that cannot say where their PR stands, and that is the one
+          version of this line there is something to do about. Either way it is
+          said: a degraded read that goes unmentioned is how the console lost 21
+          PRs on 2026-09-05. The server decides which; the page renders it. */}
+      {state.pollNote && (
+        <div className={state.pollNoteWarn ? 'banner warn' : 'banner'}>{state.pollNote}</div>
+      )}
       {/* Whatever is fix-first, on every view, above everything the view itself
           draws. It is only ever rendered when something has come back from UAT,
           so it is never furniture. */}
@@ -8418,7 +8529,7 @@ export default function App() {
                   <span className="rail-title">{r.title}</span>
                   <span className="rail-tags">
                     <UatChip row={r} />
-                    <Pill labels={r.labels} done={r.status === 'done'} />
+                    <Pill row={r} />
                     {/* Where it is in the nine stages, without opening it. Only
                         while there is a worker: a row with no worktree has no
                         stage, and "0 Preflight" on one would be a lie. */}

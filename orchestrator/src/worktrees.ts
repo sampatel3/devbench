@@ -4,7 +4,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { parseIssueState } from './state.js';
 import { readGateFile, sessionDir } from './worker.js';
-import { parseEvidence, type EvidenceItem } from './evidence.js';
+import { readEvidence, evidenceWarning, type EvidenceItem } from './evidence.js';
 import { parseGateHistory, type GateHistoryRecord } from './history.js';
 import { parseCommentRequest, type CommentRequest } from './comment.js';
 import { parseGateThreadFile, type GateThreadFileEntry } from './ask.js';
@@ -215,6 +215,7 @@ export async function scanWorktrees(
     // the thing that decides whether a worker is PARKED, and a new field must
     // never be able to change that answer.
     let gateEvidence: EvidenceItem[] = [];
+    let gateEvidenceWarning: string | null = null;
     let gateThreadFile: GateThreadFileEntry[] = [];
     let gateManualQa: ManualQa | null = null;
     let gateQuiz: Quiz | null = null;
@@ -229,7 +230,11 @@ export async function scanWorktrees(
           manualQa?: unknown;
           quiz?: unknown;
         };
-        gateEvidence = parseEvidence(obj.evidence);
+        const manifest = readEvidence(obj.evidence);
+        gateEvidence = manifest.items;
+        // What the manifest listed and the console would not serve. It travels
+        // with the gate, not beside it — see `GateFile.evidenceWarning`.
+        gateEvidenceWarning = evidenceWarning(manifest.dropped);
         gateThreadFile = parseGateThreadFile(obj.thread);
         gateManualQa = parseManualQa(obj.manualQa);
         gateQuiz = parseQuiz(obj.quiz);
@@ -271,7 +276,7 @@ export async function scanWorktrees(
     // and the status you paste for your team reading "waiting on you — gate C".
     // Its stated purpose was worktrees older than `.gate.json`; that was #4336,
     // long closed.
-    const gate: GateFile | null = gateJson;
+    const gate: GateFile | null = gateJson && { ...gateJson, evidenceWarning: gateEvidenceWarning };
 
     const session = await newestSession(t.path, configDirsFor(issue));
     const sessionId = gate?.sessionId ?? commentRequest?.sessionId ?? session?.id ?? null;

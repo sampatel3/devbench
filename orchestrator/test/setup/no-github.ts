@@ -36,6 +36,15 @@ beforeEach(() => {
   // said why — which is what sends the row back to the worker's own summary,
   // exactly as it behaved before this read existed.
   vi.spyOn(gh, 'readBlockedNote').mockResolvedValue(null);
+  // The merged-PR read, for the same reason and with the same history repeating.
+  // It was never in this list because one unstubbed call was survivable: the
+  // round trip failed and the poll moved on. Then it grew a REST fallback for
+  // the day GitHub refuses the GraphQL query — so an unstubbed call became TWO
+  // round trips, and the five `fold-spin-off` tests timed out exactly as the
+  // worker tests did when the actions omnibus arrived. Inert means an EMPTY map:
+  // "nothing merged", which is what a fixture with no merged PR meant anyway.
+  // A test about merged work overrides it, as `cycle`'s and `counts`' do.
+  vi.spyOn(gh, 'listRecentMergedPrs').mockResolvedValue(new Map());
   vi.spyOn(gh, 'fetchActionsOnMe').mockResolvedValue({
     issues: [],
     prs: [],

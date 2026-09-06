@@ -26,6 +26,13 @@
  *    a `rev` that moves exactly once per fix. Those two numbers are the join
  *    key the operator's ticks hang on, which is what lets one step be re-checked
  *    while the other nine keep the ticks already given them.
+ *
+ * v3 adds ONE field, `route`, and it is the smallest thing that could fix the
+ * complaint behind it: the operator asked for the screenshots to be there every
+ * time, consistent between runs, and produced with no human intervention. A step
+ * that says which screen it is on is a step the console can photograph itself
+ * (capture.ts); a step that does not is left exactly as it was. Nothing here
+ * drives anything — this file stays a pure parser and a fence.
  */
 import { isUnderPlansRoot } from './evidence.js';
 
@@ -40,6 +47,30 @@ export type ManualQaStep = {
   do: string;
   /** A deep link straight to it, or null when there is none we will link to. */
   url: string | null;
+  /**
+   * The app PATH this step is on — `/quotes/1234` — or null when the step has no
+   * screen the console can drive to.
+   *
+   * `url` is the thing the operator CLICKS and `route` is the thing the console
+   * DRIVES,
+   * and they are two fields because they are two different trust problems. A
+   * `url` is a whole address a worker wrote, so the only defence available is to
+   * refuse every host but this machine (`localUrl`). A `route` carries no host at
+   * all: the console owns the scheme, the host and the port, and takes only the
+   * path — so a worker cannot name a destination even if it tries.
+   *
+   * It exists because 32 of 53 gate C send-backs were bounces for missing
+   * captures while the PNGs sat on disk, and ~48% of first C rounds arrived with
+   * nothing wired at all. The console can take those pictures itself, but only
+   * for a step that says which screen it is on. A step with no route is not
+   * drivable and keeps exactly the rules it always had: the worker's own shots,
+   * or the sanctioned `before: null` / `beforeShot: null` pair.
+   *
+   * Fenced by `qaRoute` below, and fenced AGAIN when the URL is built
+   * (`captureUrl` in capture.ts) — one cheap check at parse time, one
+   * load-bearing check at the moment it would be navigated to.
+   */
+  route: string | null;
   /** What this did BEFORE the change — the half that makes the after meaningful.
    *  null WITH a null `beforeShot` is the signal for genuinely new behaviour;
    *  the card says "New — nothing to compare" rather than inventing prose. */
@@ -208,6 +239,44 @@ export function localUrl(raw: unknown): string | null {
   return raw;
 }
 
+/**
+ * A route we are willing to DRIVE A BROWSER TO, or null.
+ *
+ * This is the cheap half of the capture fence — the half that runs while the
+ * gate file is being read, so a route that could never be navigated is never
+ * even selected as drivable. The load-bearing half is `captureUrl`, which
+ * rebuilds the address from a port the CONSOLE chose and then re-reads the
+ * hostname back off it.
+ *
+ * What is refused, and why each one:
+ *
+ *  - anything that is not a path from the root. A relative route has no fixed
+ *    meaning, and there is no "current page" for a capture to be relative to.
+ *  - a protocol-relative path (`//evil.example/x`). It looks like a path and it
+ *    is a host: `new URL('//evil.example/x', 'http://127.0.0.1:8081/')` resolves
+ *    to `http://evil.example/x`, off this machine entirely.
+ *  - a backslash anywhere. Browsers normalise `\` to `/` in the authority, so
+ *    `/\evil.example` is the same escape wearing a different character.
+ *  - whitespace, control characters and NUL. A route is one token; anything that
+ *    can end it early can start something else.
+ *  - `..` as a segment. It cannot escape the origin, but it can address a screen
+ *    other than the one the step names, and the capture is evidence about the
+ *    step it is filed under.
+ */
+export function qaRoute(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const r = raw.trim();
+  if (!r || r.length > 512) return null;
+  if (!r.startsWith('/') || r.startsWith('//')) return null;
+  if (r.includes('\\')) return null;
+  // Control characters are refused with an explicit range so the source stays
+  // readable — a literal one in a character class is invisible in a diff.
+  if (/[\s\u0000-\u001f\u007f]/.test(r)) return null;
+  const path = r.split(/[?#]/)[0] ?? '';
+  if (path.split('/').includes('..')) return null;
+  return r;
+}
+
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null);
 
 /**
@@ -232,7 +301,7 @@ const int = (v: unknown): number | null =>
  * `parseEvidence`: never throws, drops what it cannot trust, and keeps the rest
  * so a partly-malformed script is still usable rather than invisible.
  *
- * THE RULE THAT MATTERS: only the nine named step fields are read. A worker
+ * THE RULE THAT MATTERS: only the ten named step fields are read. A worker
  * writing `"verified": true`, `"status": "verified"` or anything else
  * verdict-shaped gets it silently ignored, because the tick is the operator's
  * and lives in the console's own state file where no worker can reach it. This
@@ -284,6 +353,10 @@ export function parseManualQa(raw: unknown): ManualQa | null {
           rev: int(s.rev) ?? 1,
           do: what,
           url: localUrl(s.url),
+          // Absent on every gate file written before routes existed, and on
+          // every step that has no screen. Both read as "not drivable", which
+          // is the rule this step already lived under.
+          route: qaRoute(s.route),
           before: str(s.before),
           beforeShot: shot(s.beforeShot),
           // A v1 step ({do,url,before,expected}) parses as a v2 step with

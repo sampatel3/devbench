@@ -1,9 +1,9 @@
 /**
  * What a row LOOKS like — the chip's colour class and the rail's left edge.
  *
- * The ask: colour-code the pills and the issue cards on a system good enough
- * that opening the console makes each row's status, and what is actively
- * happening on it, obvious at a glance.
+ * The operator asked for a colour system on the pills and the issue cards, so
+ * that opening the console makes the status of each row — and what is actively
+ * happening on it — obvious at a glance.
  *
  * Two facts drove the whole design, both found by reading what the page does
  * today rather than by designing something new:
@@ -11,11 +11,11 @@
  *   1. SEVEN of the sixteen statuses got no colour at all — they fell through
  *      the Chip's ternary to `''`. Two of those, `checkpoint` and `detached`,
  *      are work that STOPPED and will never restart itself, and they rendered
- *      pixel-identical to `queued` and `pr-open`, which need nothing from
- *      the operator.
+ *      pixel-identical to `queued` and `pr-open`, which need nothing from them.
  *   2. The rail's orange left edge was `.rail-item.on.gate` — it required the
  *      row to be SELECTED. So the edge that says "this one is asking you
- *      something" only appeared after the row had already been clicked. Backwards.
+ *      something" only appeared after the row had already been clicked.
+ *      Backwards.
  *
  * So: one hue per meaning, no new hues, and the edge answers exactly one
  * question — is this row asking something of me right now?
@@ -41,8 +41,8 @@ describe('chipClass — one hue per meaning', () => {
   });
 
   it('paints work that STOPPED, which used to be indistinguishable from work that is fine', () => {
-    // The headline gap. Both are in STOPPED — "nobody is working these any more,
-    // so they are on the operator again" — and both rendered as plain grey text.
+    // The headline gap. Both are in STOPPED — nobody is working these any more,
+    // so they are back on the operator — and both rendered as plain grey text.
     expect(chipClass(row('checkpoint'))).toBe('held');
     expect(chipClass(row('detached'))).toBe('held');
   });
@@ -71,11 +71,11 @@ describe('chipClass — one hue per meaning', () => {
   });
 
   it('leaves grey to mean exactly one thing: somebody else is moving it', () => {
-    // `blocked` used to be in this list. It gets the paused treatment instead,
-    // so an incomplete-and-waiting row reads as one: a comment sitting
-    // unanswered by a named person and a PR under active review
-    // by a codeowner team are opposites, and they rendered identically. Grey now
-    // means only the healthy one: it is moving, without you.
+    // `blocked` used to be in this list. The operator asked for blocked to wear
+    // the same look as parked, so it is clear which rows are incomplete and
+    // waiting — a comment sitting unanswered by a named person and a PR under
+    // active review by a codeowner team are opposites, and they rendered
+    // identically. Grey now means only the healthy one: it is moving, without you.
     // `pr-open` used to be in this list. It came out because the one true
     // sentence covered two unlike states: `queued` has not started and is
     // waiting for a slot HERE, while an open PR is finished and waiting on the
@@ -91,14 +91,14 @@ describe('chipClass — one hue per meaning', () => {
     expect(chipClass(row('done'))).toBe('none');
   });
 
-  it('has no fall-through left: every one of the 16 gets a decided class', () => {
+  it('has no fall-through left: every one of the 17 gets a decided class', () => {
     // The bug this whole change fixes was a `: ''` default nobody had revisited.
     // '' is now a CHOICE (grey = someone else's) rather than a leftover, so the
-    // test names all sixteen and the map is closed.
+    // test names all seventeen and the map is closed.
     const all: WorkerStatus[] = [
       'no-worker', 'preparing', 'queued', 'active', 'paused', 'at-gate',
       'awaiting-post', 'blocked', 'reply-received', 'rework', 'detached',
-      'pr-open', 'pr-merged', 'done', 'checkpoint', 'failed',
+      'pr-open', 'pr-merged', 'done', 'checkpoint', 'unreadable', 'failed',
     ];
     const seen = all.map((s) => [s, chipClass(row(s))] as const);
     expect(seen.filter(([, c]) => c === '').map(([s]) => s)).toEqual(['queued']);
@@ -108,15 +108,15 @@ describe('chipClass — one hue per meaning', () => {
 /**
  * PARKED AND BLOCKED — one treatment, two states, and a third kept apart.
  *
- * The ask, in three parts: a ticket can be paused where it stands, staying at
- * its gate but out of the top of the queue and visibly paused; `blocked` gets
- * the same treatment, because both are incomplete and waiting; and neither is
- * the same thing as waiting on external review or input, such as an open PR
- * awaiting review and merge.
+ * The operator asked for three things at once: a ticket they park stays at its
+ * gate but leaves the top of the queue; parked reads unmistakably as parked, and
+ * blocked wears the same look, so it is clear which rows are incomplete and
+ * waiting; and neither of those is the same as waiting on external review or
+ * input, such as an open PR awaiting review and merge.
  *
- * The third requirement is the one that is easy to lose: an open PR is
- * PROGRESSING WITHOUT THE OPERATOR. It is not stalled and it must not be dressed
- * as stalled.
+ * Three requirements, and the third is the one that is easy to lose: an open PR
+ * is PROGRESSING WITHOUT THEM. It is not stalled and it must not be dressed as
+ * stalled.
  */
 describe('parked and blocked share one look, and an open PR does not', () => {
   it('paints a parked row aside — whatever its status underneath', () => {
@@ -133,7 +133,7 @@ describe('parked and blocked share one look, and an open PR does not', () => {
     expect(edgeClass(row('blocked'))).toBe('aside');
   });
 
-  it('does NOT give it to an open PR, which is moving without the operator', () => {
+  it('does NOT give it to an open PR, which is moving without them', () => {
     // `waiting.ts` splits `on` (other people) from `yours` and `blocker.ts`
     // works out who actually holds the merge. Flattening pr-open into the
     // stalled class would throw both away.
@@ -168,7 +168,7 @@ describe('parked and blocked share one look, and an open PR does not', () => {
     expect(edgeClass(old)).toBe('gate');
   });
 
-  it('records a reason when one was given, and is fine when it was not', () => {
+  it('records a reason when the operator gave one, and is fine when they did not', () => {
     expect(chipClass(row('at-gate', { parked: PARKED(null) }))).toBe('aside');
     expect(chipClass(row('at-gate', { parked: PARKED('waiting on the design call') }))).toBe('aside');
   });
@@ -177,7 +177,7 @@ describe('parked and blocked share one look, and an open PR does not', () => {
 describe('edgeClass — the one question the left edge answers', () => {
   it('shows the orange edge WITHOUT the row being selected', () => {
     // The crux. `.rail-item.on.gate` needed both classes, so the edge only ever
-    // appeared on the row already opened.
+    // appeared on the row the operator had already opened.
     expect(edgeClass(row('at-gate'))).toBe('gate');
   });
 
@@ -210,12 +210,12 @@ describe('edgeClass — the one question the left edge answers', () => {
    * the list while its own card reads "Not ticked on PR #4547". Without this the
    * position says "yours" and the colour says "not yours".
    */
-  it('marks an open PR the console says is holding items of the operator’s', () => {
+  it('marks an open PR the console says is holding items of theirs', () => {
     const mine = row('pr-open', { waiting: { on: null, note: null, yours: [{ text: 'Not ticked: screenshots', detail: null, url: null }] } });
     expect(edgeClass(mine)).toBe('gate');
   });
 
-  it('leaves an open PR with nothing of the operator’s unmarked', () => {
+  it('leaves an open PR with nothing of theirs unmarked', () => {
     const theirs = row('pr-open', { waiting: { on: 'the codeowner team', note: null, yours: [] } });
     expect(edgeClass(theirs)).toBe('');
   });
@@ -243,7 +243,7 @@ describe('edgeClass — the one question the left edge answers', () => {
  * one place it might not: `.rail-item.on` and `.rail-item.aside` have the SAME
  * specificity (0,2,0) and both set `box-shadow`, so the only thing separating
  * them is source order. Get it backwards and a parked row loses its cold edge
- * the moment it is clicked — which is the moment somebody is looking at it.
+ * the moment the operator clicks it — which is the moment they are looking at it.
  *
  * Measured in a browser against the built stylesheet before this was written:
  * `.rail-item.aside` computes `rgb(85,103,122) 2px inset` at opacity 0.72, and
@@ -266,7 +266,7 @@ describe('the parked treatment survives the cascade', () => {
     expect(at('.rail-item.aside {')).toBeGreaterThan(at('.rail-item.on {'));
   });
 
-  it('fades it far less than a closed row: parked is work the operator is coming back to', () => {
+  it('fades it far less than a closed row: parked is work they are coming back to', () => {
     const aside = css.slice(at('.rail-item.aside {')).split('}')[0]!;
     const finished = css.slice(at('.rail-item.finished {')).split('}')[0]!;
     expect(aside).toContain('opacity: 0.72');

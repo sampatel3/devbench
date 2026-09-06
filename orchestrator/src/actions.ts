@@ -6,12 +6,17 @@
  * `comment.ts` remains the only thing in this console that ever writes to it.
  *
  * The one fact the whole file turns on: the post-UAT human verdict lands on the
- * ISSUE as a free-text comment with no label, and it is the ONLY tier-1 kind.
- * The `changes-requested` label is the pre-merge review bot's, it lands on
+ * ISSUE as a free-text comment with no label, and it is what tier 1 is for. The
+ * `changes-requested` label is the pre-merge review bot's, it lands on
  * essentially every feature PR the operator opens, and putting it in tier 1 would
  * push "fix first" to their phone on every PR — the failure mode that gets a
  * notifier muted for ever. It is tier 2 here, and `review.ts` still owns its
  * rework loop.
+ *
+ * Tier 1 has a second member, and it is the same fact one step later:
+ * `closed-over-fail`, a ticket whose fix shipped and which was then closed with
+ * the send-back still the newest word on it. Only `uat-fail` reaches the phone
+ * on its own — see `KindMeta.push`, the only thing notify.ts reads to decide it.
  */
 
 import type { ActionsPayload, GhActionsIssue } from './gh.js';
@@ -40,9 +45,17 @@ export type KindMeta = {
  * through `UNKNOWN_KIND_META` instead of crashing.
  */
 export const KIND_META: Record<string, KindMeta> = {
-  // Tier 1 — the post-UAT send-back. The only kind that outranks P0, and the
-  // only kind that pushes on its own.
+  // Tier 1 — the post-UAT send-back. Outranks P0, and the only kind in this
+  // table that pushes on its own.
   'uat-fail': { tier: 1, label: 'UAT fail', push: true },
+  // Tier 1, and NOT a push. The ticket SHIPPED a fix for a send-back and was
+  // then closed with nothing re-testing it — 4 of 105 closures, #4619, #5019,
+  // #5139 and #4344 — so it is fix-first by the same rule `uat-fail` is. It does
+  // not reach the phone alone, because it is a fact about work that has already
+  // stopped rather than an interruption; a live send-back on an open issue is
+  // still `uat-fail` and still pushes. One more kind buzzing a phone is how the
+  // whole notifier gets muted.
+  'closed-over-fail': { tier: 1, label: 'closed over a QA fail', push: false },
 
   // Tier 2 — needs a response, but does not outrank triage.
   'changes-requested': { tier: 2, label: 'changes requested', push: false },
@@ -204,8 +217,13 @@ const toUatComment = (c: GhActionsIssue['comments'][number]): UatComment => c;
 /**
  * The newest human UAT verdict on an issue, or null. ONE call into `uat.ts`;
  * there is no second implementation of the predicate anywhere in this console.
+ *
+ * Exported for the close record (`close-verdict.ts`), which asks the same
+ * question at a different moment — what QA had said when the ticket closed. That
+ * record decides what a closed row says about itself, so it must be the same
+ * predicate the feed uses, not a second reading of the same comments.
  */
-function newestVerdict(
+export function newestUatVerdict(
   issue: GhActionsIssue,
   me: string,
 ): { comment: GhActionsIssue['comments'][number]; verdict: UatVerdictKind } | null {
@@ -263,7 +281,7 @@ export function deriveActions(payload: ActionsPayload, ctx: DeriveContext): Acti
   for (const issue of payload.issues) {
     const subject = { type: 'issue' as const, number: issue.number, title: issue.title, url: issue.url };
     const consoleIssue = ctx.trackedIssues.has(issue.number) ? issue.number : null;
-    const verdict = newestVerdict(issue, ctx.me);
+    const verdict = newestUatVerdict(issue, ctx.me);
     // A CLOSED issue is in this payload for ONE reason: a send-back that arrived
     // on or after the close. #4914 is the instance — `Test Result: Fail` posted
     // and the issue closed as COMPLETED in the same second, `Revisit` twelve
@@ -341,6 +359,43 @@ export function deriveActions(payload: ActionsPayload, ctx: DeriveContext): Acti
             progress === 'inflight'
               ? `${verdict.comment.author.login} marked this ${verdict.verdict} in UAT — fix in flight`
               : `${verdict.comment.author.login} tested this in UAT and marked it ${verdict.verdict}`,
+          detail: firstLine(verdict.comment.body),
+          url: verdict.comment.url,
+          consoleIssue,
+          verdict: verdict.verdict,
+        });
+      } else if (closed) {
+        // SHIPPED, THEN CLOSED, WITH THE SEND-BACK STILL THE NEWEST WORD ON IT.
+        //
+        // The one case the branch above deliberately says nothing about. A merge
+        // after the verdict is `shipped` — QA's ball again, and while the issue
+        // is OPEN that is right, because the next thing to happen is a re-test.
+        // A CLOSE is that re-test never happening: #4619, #5019, #5139 and #4344
+        // were each failed by a human, fixed, merged and closed, and nothing
+        // anywhere said the verdict had never been answered. The row read
+        // "closed — PR merged and QA signed it off" over a standing Fail.
+        //
+        // Only a NEWER `Pass` answers a `Fail`, and a newer Pass would BE this
+        // verdict — `newestUatVerdict` returns the latest one. So the test is
+        // exactly "the last thing a human said about this was a send-back, and
+        // then it was closed".
+        //
+        // Tier 1 and NOT a push. It is fix-first by the same rule `uat-fail` is,
+        // but it is a fact about work that has already stopped rather than an
+        // interruption: the shipped fix is months of nobody waiting, and the
+        // one kind that buzzes a phone stays the live send-back. The toast, the
+        // badge and the bundle carry this one. See `KindMeta.push`.
+        //
+        // Exclusive with the kinds above by construction — one branch each — so
+        // one verdict is never two rows. `uatFailFor` reads all three, which is
+        // what puts the UAT chip and the verdict sentence back on a closed row.
+        push({
+          id: `closed-over-fail:issue#${issue.number}:${verdict.comment.id}`,
+          kind: 'closed-over-fail',
+          subject,
+          actor: verdict.comment.author.login,
+          eventAt: verdict.comment.createdAt,
+          reason: `#${issue.number} was closed while ${verdict.comment.author.login}'s ${verdict.verdict} still stood — the fix shipped, nothing re-tested it`,
           detail: firstLine(verdict.comment.body),
           url: verdict.comment.url,
           consoleIssue,
@@ -648,13 +703,21 @@ export const EMPTY_FEED: ActionsFeed = {
  *
  * Quieter is a wording decision, made by the caller from `inflight`. Absent is
  * not a wording decision.
+ *
+ * `closed-over-fail` counts for the same reason, one step further on. A closed
+ * row is the quietest row on the page — `done`, faded, sunk to the floor — and
+ * the four tickets closed over a standing verdict are exactly the ones where
+ * that silence is wrong. It is never `inflight`: a close is an ending, not a fix
+ * somebody is visibly working on.
  */
+const SEND_BACK_KINDS = new Set(['uat-fail', 'uat-fail-inflight', 'closed-over-fail']);
+
 export function uatFailFor(
   actions: Action[],
   issue: number,
 ): { by: string; at: string; verdict: UatVerdictKind; url: string; inflight: boolean } | null {
   const a = actions.find(
-    (x) => (x.kind === 'uat-fail' || x.kind === 'uat-fail-inflight') && x.subject.type === 'issue' && x.subject.number === issue,
+    (x) => SEND_BACK_KINDS.has(x.kind) && x.subject.type === 'issue' && x.subject.number === issue,
   );
   if (!a || !a.verdict) return null;
   return { by: a.actor, at: a.eventAt, verdict: a.verdict, url: a.url, inflight: a.kind === 'uat-fail-inflight' };
