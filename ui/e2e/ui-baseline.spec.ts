@@ -262,27 +262,17 @@ async function expectSanitizedSurface(page: Page): Promise<void> {
   }));
 
   // The fixtures are neutral, so this list is the guard that keeps them that
-  // way: a screenshot published from a real console must never carry the
-  // operator's handle, home directory or employer. Every string is written out
-  // verbatim on purpose — de-identifying THIS list would leave the check
-  // passing while it guards nothing.
+  // way: a baseline screenshot must never carry anything real. What is checkable
+  // for everyone is a leaked filesystem path — a home directory is where a real
+  // login, a client name and a machine layout all show up at once, and it is the
+  // one identifier every fork shares the shape of.
   //
-  // Colleagues' logins are deliberately NOT here. A public repo is the wrong
-  // place to publish a roster of real people, and the fixture handles below
-  // never carry one, so the surface is checked against the accounts this
-  // console is configured for instead.
-  const forbiddenOnScreen = [
-    'sampatel',
-    's2shape',
-    's2ai',
-    'secondsight',
-    'shape-local',
-    'deeplight',
-    'taali',
-    '/users/',
-    '/home/',
-    'github.com/s2ai',
-  ];
+  // ADD YOUR OWN before trusting this in a fork: your GitHub login, your
+  // organisation, your repository, your internal product names. They are not
+  // listed here because a public repository is the wrong place to publish either
+  // a roster of real people or the private origin of this code — and a list of
+  // strings that cannot appear in a neutral fixture would guard nothing anyway.
+  const forbiddenOnScreen = ['/users/', '/home/', 'c:\\users\\'];
   for (const forbidden of forbiddenOnScreen) {
     expect(surface.text.toLowerCase(), `screenshot surface contains ${forbidden}`).not.toContain(forbidden);
   }

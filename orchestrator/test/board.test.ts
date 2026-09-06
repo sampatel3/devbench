@@ -40,7 +40,7 @@ const OPTIONS = Object.freeze({
 const facts = (over: Partial<BoardFacts> = {}): BoardFacts => ({
   issue: 4546,
   milestone: 'started',
-  createdByHim: true,
+  createdByOperator: true,
   issueClosed: false,
   alreadyDecided: false,
   card: { lane: 'Ready', optionIdByName: OPTIONS },
@@ -83,7 +83,7 @@ describe('the lifecycle the board should follow', () => {
   it('starts a Backlog card the operator raised, and leaves the team’s alone', () => {
     const mine = decideBoardMove(facts({ card: { lane: 'Backlog', optionIdByName: OPTIONS } }));
     expect(mine.act).toBe('move');
-    const theirs = decideBoardMove(facts({ createdByHim: false, card: { lane: 'Backlog', optionIdByName: OPTIONS } }));
+    const theirs = decideBoardMove(facts({ createdByOperator: false, card: { lane: 'Backlog', optionIdByName: OPTIONS } }));
     expect(theirs.act).toBe('card');
     expect(theirs.reason).toContain('you did not raise it');
   });

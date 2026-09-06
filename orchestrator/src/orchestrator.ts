@@ -4258,7 +4258,7 @@ export class Orchestrator extends EventEmitter {
           const base = {
             issue: scan.issue,
             milestone,
-            createdByHim: issue !== null && issue.author === this.#cfg.assignee,
+            createdByOperator: issue !== null && issue.author === this.#cfg.assignee,
             issueClosed: issue === null,
             alreadyDecided: this.#persisted.boardMoves[key] !== undefined,
           };

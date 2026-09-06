@@ -313,7 +313,7 @@ describe('parseCommentRequest — structured decisions and handoffs', () => {
     const legacy = parseCommentRequest(
       JSON.stringify({
         issue: 4334,
-        addressee: '@Chris',
+        addressee: '@dev-erin',
         blocks: false,
         why: 'A legacy heads-up.',
         draftBody: 'Legacy body.',

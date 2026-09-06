@@ -75,7 +75,7 @@ export type BoardFacts = {
   /** Which milestone the console just noticed. */
   milestone: Milestone;
   /** GitHub says the operator opened this issue — the "if I raised it" clause. */
-  createdByHim: boolean;
+  createdByOperator: boolean;
   /** Not in the open assigned list any more. */
   issueClosed: boolean;
   /** THIS milestone has already been applied to THIS issue. */
@@ -117,7 +117,7 @@ export function decideBoardMove(f: BoardFacts): BoardDecision {
 
   // The Backlog guard, and the only place "I raised it" is consulted. A card the
   // TEAM parked in Backlog is their triage decision, not the console's to override.
-  if (f.card.lane === 'Backlog' && !f.createdByHim) {
+  if (f.card.lane === 'Backlog' && !f.createdByOperator) {
     return { act: 'card', spend: false, reason: 'the team put this in Backlog and you did not raise it' };
   }
 
